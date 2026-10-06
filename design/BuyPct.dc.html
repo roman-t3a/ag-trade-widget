@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AG widget – buy units</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 380px; height: 600px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; gap: 14px; padding: 12px">
+
+  <sc-for list="{{modes}}" as="m" hint-placeholder-count="2">
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <span style="font-size: 14px; font-weight: 600">Buy</span>
+        <div style="display: flex; background: #111316; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+          <button style="{{m.s0}}">◎</button><button style="{{m.s1}}">$</button><button style="{{m.s2}}">%</button>
+        </div>
+        <span style="font-size: 10.5px; color: #8B919C">{{m.hint}}</span>
+        <div style="flex: 1"></div>
+        <span class="n" style="color: #C9CDD4">◎ 4.22</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+        <sc-for list="{{m.tiles}}" as="t" hint-placeholder-count="8">
+          <button style="{{t.style}}"><div class="n" style="font-size: 13px; font-weight: 600">{{t.main}}</div><div class="n" style="font-size: 10px; color: #8B919C; margin-top: 1px">{{t.sub}}</div></button>
+        </sc-for>
+      </div>
+    </div>
+  </sc-for>
+
+  <div style="background: #1C1F25; border: 1px solid #3A3F48; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 10px 30px #0008">
+    <div style="display: flex; align-items: center"><span style="font-weight: 600">Buy 1% of supply</span><div style="flex: 1"></div><span class="n" style="color: #8B919C">÷ split 3</span></div>
+    <div style="font-size: 10.5px; color: #8B919C">Bonding curve · mcap $6.97K · includes price impact + fee</div>
+    <div class="n" style="display: flex"><span style="color: #C9CDD4">Main</span><div style="flex: 1"></div><span>0.162 ◎</span></div>
+    <div class="n" style="display: flex"><span style="color: #C9CDD4">Sniper 2</span><div style="flex: 1"></div><span>0.151 ◎</span></div>
+    <div class="n" style="display: flex"><span style="color: #C9CDD4">Sniper 3</span><div style="flex: 1"></div><span>0.164 ◎</span></div>
+    <div style="height: 1px; background: #2C3038"></div>
+    <div class="n" style="display: flex; font-weight: 600"><span>Total</span><div style="flex: 1"></div><span>0.477 ◎ · $71.6</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":380,"height":600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const on = 'background: #2A2D34; border: 0; border-radius: 6px; padding: 2px 8px; font-weight: 600';
+    const off = 'background: none; border: 0; border-radius: 6px; padding: 2px 8px; color: #8B919C';
+    const tile = 'background: transparent; border: 1px solid #4FAF7D; border-radius: 9px; padding: 5px 0; color: #8FE6B4; text-align: center';
+    const tileOn = 'background: #163126; border: 1px solid #7BE0A4; border-radius: 9px; padding: 5px 0; color: #DFFBEA; text-align: center';
+    const usd = [['$10','0.067 ◎'],['$25','0.167 ◎'],['$50','0.333 ◎'],['$100','0.667 ◎'],['$250','1.67 ◎'],['$500','3.33 ◎'],['$1K','6.67 ◎'],['$2.5K','16.7 ◎']];
+    const pct = [['0.1%','0.047 ◎'],['0.25%','0.118 ◎'],['0.5%','0.237 ◎'],['1%','0.477 ◎'],['1.5%','0.718 ◎'],['2%','0.960 ◎'],['3%','1.45 ◎'],['5%','2.50 ◎']];
+    return {
+      modes: [
+        { s0: off, s1: on, s2: off, hint: 'USD → SOL at AG price', tiles: usd.map(([main, sub]) => ({ main, sub, style: tile })) },
+        { s0: off, s1: off, s2: on, hint: '% of supply', tiles: pct.map(([main, sub], i) => ({ main, sub, style: i === 3 ? tileOn : tile })) },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

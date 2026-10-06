@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Positions</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 440px; height: 720px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #24272E">
+    <span style="font-size: 14px; font-weight: 600">Positions</span>
+    <span class="n" style="color: #8B919C">5 open</span>
+    <div style="flex: 1"></div>
+    <div style="display: flex; background: #111316; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+      <button style="background: #2A2D34; border: 0; border-radius: 6px; padding: 2px 9px; font-weight: 600">PnL</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">Value</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">Newest</button>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 14px; border-bottom: 1px solid #24272E">
+    <div><div style="font-size: 10px; color: #6E7480; letter-spacing: .06em">OPEN VALUE</div><div class="n" style="font-size: 14px; font-weight: 600">◎ 4.38</div><div class="n" style="font-size: 10.5px; color: #8B919C">$657</div></div>
+    <div><div style="font-size: 10px; color: #6E7480; letter-spacing: .06em">UNREALIZED</div><div class="n" style="font-size: 14px; font-weight: 600; color: #8FE6B4">+◎ 1.02</div><div class="n" style="font-size: 10.5px; color: #8FE6B4">+$153 · +30.4%</div></div>
+    <div><div style="font-size: 10px; color: #6E7480; letter-spacing: .06em">TODAY REALIZED</div><div class="n" style="font-size: 14px; font-weight: 600; color: #F59AA6">−◎ 2.16</div><div class="n" style="font-size: 10.5px; color: #F59AA6">−$324</div></div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; flex: 1; overflow: hidden">
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+      <div style="display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; border-bottom: 1px solid #1F2228; background: {{r.bg}}">
+        <div style="display: flex; align-items: center; gap: 8px">
+          <span style="width: 28px; height: 28px; border-radius: 28px; background: #24272E; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #C9CDD4">{{r.ini}}</span>
+          <div style="display: flex; flex-direction: column; gap: 1px; min-width: 0">
+            <span style="font-weight: 600">{{r.sym}} <span class="n" style="color: #8B919C; font-weight: 400; font-size: 10.5px">{{r.mc}}</span></span>
+            <span class="n" style="font-size: 10.5px; color: #8B919C">{{r.sub}}</span>
+          </div>
+          <div style="flex: 1"></div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 1px">
+            <span class="n" style="font-weight: 600; color: {{r.col}}">{{r.pnl}}</span>
+            <span class="n" style="font-size: 10.5px; color: {{r.col}}">{{r.pct}}</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px">
+          <span style="font-size: 10px; border-radius: 999px; padding: 1px 8px; background: {{r.tagBg}}; color: {{r.tagFg}}; border: 1px solid {{r.tagLn}}">{{r.tag}}</span>
+          <div style="flex: 1"></div>
+          <button class="n" style="border: 1px solid #B9505F; background: none; color: #F59AA6; border-radius: 7px; padding: 2px 8px; font-weight: 600">25%</button>
+          <button class="n" style="border: 1px solid #B9505F; background: none; color: #F59AA6; border-radius: 7px; padding: 2px 8px; font-weight: 600">50%</button>
+          <button class="n" style="border: 1px solid #B9505F; background: #2E161B; color: #FFC2C2; border-radius: 7px; padding: 2px 8px; font-weight: 700">100%</button>
+          <button style="border: 1px solid #8A6A1E; background: none; color: #F2B84B; border-radius: 7px; padding: 2px 8px; font-weight: 600">Init</button>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="padding: 10px 14px; border-top: 1px solid #24272E; display: flex; gap: 8px; align-items: center">
+    <span style="font-size: 10.5px; color: #8B919C">Click a coin to open it on GMGN</span><div style="flex: 1"></div>
+    <button style="border: 1px solid #5C2A33; background: #2A1418; color: #FFC2C2; border-radius: 8px; padding: 5px 10px; font-weight: 600">Sell all losers</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":440,"height":720}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const up = '#8FE6B4', dn = '#F59AA6';
+    const server = { tagBg: '#10261C', tagFg: '#7FE0B0', tagLn: '#24563C' }, warn = { tagBg: '#2A2412', tagFg: '#FFE08A', tagLn: '#5A4A1C' }, none = { tagBg: 'transparent', tagFg: '#8B919C', tagLn: '#2C3038' };
+    return { rows: [
+      Object.assign({ ini: 'PK', sym: 'PUMPKART', mc: '$76.6K', sub: '3 wallets · ◎ 1.84 · entry $41K', pnl: '+◎ 0.86', pct: '+87.8%', col: up, tag: 'TP2 +300% next · SL −35%', bg: 'transparent' }, server),
+      Object.assign({ ini: 'DC', sym: 'DABCAT', mc: '$19.5K', sub: '2 wallets · ◎ 1.20 · entry $16.9K', pnl: '+◎ 0.16', pct: '+15.4%', col: up, tag: 'Dip buy armed ≤ $14K', bg: '#1A1D22' }, warn),
+      Object.assign({ ini: 'NP', sym: 'NPAD', mc: '$9.1K', sub: '3 wallets · ◎ 0.66 · entry $8.8K', pnl: '+◎ 0.02', pct: '+3.1%', col: up, tag: 'Trailing −25% · stop $8.4K', bg: 'transparent' }, warn),
+      Object.assign({ ini: 'JV', sym: 'JEVABLE', mc: '$6.1K', sub: '1 wallet · ◎ 0.30 · entry $8.1K', pnl: '−◎ 0.10', pct: '−25.0%', col: dn, tag: 'no exit set', bg: 'transparent' }, none),
+      Object.assign({ ini: 'MF', sym: '.meowfart', mc: '$75.3K', sub: '1 wallet · ◎ 0.38 · entry $59.4K', pnl: '+◎ 0.08', pct: '+26.7%', col: up, tag: 'Init @ Mig · waiting', bg: 'transparent' }, warn),
+    ] };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "ag-trade-widget",
+  "version": "3.5.0",
+  "private": true,
+  "description": "Tampermonkey userscript: GMGN/Axiom-style buy/sell widget that trades through Alpha Gardeners wallets",
+  "scripts": {
+    "check": "node --check ag-trade-widget.user.js",
+    "test": "node test/ag-trade-widget.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0"
+  }
+}

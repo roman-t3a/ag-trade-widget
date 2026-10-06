@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trigger orders</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+input{font:inherit}
+</style>
+</helmet>
+<div style="width: 380px; height: 860px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #24272E">
+    <span style="font-size: 14px; font-weight: 600">Triggers</span>
+    <span style="font-size: 10.5px; color: #8B919C">fire on the live market cap</span>
+    <div style="flex: 1"></div>
+    <span style="width: 7px; height: 7px; border-radius: 7px; background: #3DDC97"></span><span class="n">$19.5K</span>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin: 10px 12px 0; background: #111316; border: 1px solid #24272E; border-radius: 9px; padding: 3px">
+    <button style="background: #163126; border: 1px solid #2E9C6E; border-radius: 7px; padding: 5px 0; color: #8FE6B4; font-weight: 600">Dip buy</button>
+    <button style="background: none; border: 1px solid transparent; border-radius: 7px; padding: 5px 0; color: #8B919C">Take profit</button>
+    <button style="background: none; border: 1px solid transparent; border-radius: 7px; padding: 5px 0; color: #8B919C">Trailing</button>
+    <button style="background: none; border: 1px solid transparent; border-radius: 7px; padding: 5px 0; color: #8B919C">DCA</button>
+  </div>
+
+  <div style="padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <label style="display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: #8B919C">Buy when market cap drops to
+      <span style="display: flex; align-items: center; gap: 8px; background: #111316; border: 1px solid #B8F04A; border-radius: 9px; padding: 8px 10px">
+        <span class="n" style="color: #8B919C">≤ $</span><input class="n" value="14.0K" aria-label="Target market cap" style="flex: 1; min-width: 0; background: none; border: 0; color: #E6E8EC; font-size: 15px; outline: none">
+        <span class="n" style="color: #F59AA6">−28.2%</span>
+      </span>
+    </label>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+      <button class="n" style="border: 1px solid #2C3038; background: #1F2228; border-radius: 7px; padding: 4px 0">−10%</button>
+      <button class="n" style="border: 1px solid #2C3038; background: #1F2228; border-radius: 7px; padding: 4px 0">−20%</button>
+      <button class="n" style="border: 1px solid #B8F04A; background: #1C2A12; color: #B8F04A; border-radius: 7px; padding: 4px 0">−30%</button>
+      <button class="n" style="border: 1px solid #2C3038; background: #1F2228; border-radius: 7px; padding: 4px 0">entry</button>
+    </div>
+
+    <div style="position: relative; height: 46px">
+      <div style="position: absolute; left: 0; right: 0; top: 20px; height: 4px; background: #2C3038; border-radius: 4px"></div>
+      <div style="position: absolute; left: 22%; width: 58%; top: 20px; height: 4px; background: #F59AA6; opacity: .45; border-radius: 4px"></div>
+      <div style="position: absolute; left: 22%; top: 13px; width: 3px; height: 18px; background: #B8F04A; border-radius: 2px"></div>
+      <div style="position: absolute; left: 80%; top: 12px; width: 10px; height: 10px; border-radius: 10px; background: #3DDC97; margin-left: -5px; margin-top: 3px"></div>
+      <span class="n" style="position: absolute; left: 22%; top: 32px; font-size: 10px; color: #B8F04A; margin-left: -14px">$14.0K</span>
+      <span class="n" style="position: absolute; left: 80%; top: 32px; font-size: 10px; color: #8FE6B4; margin-left: -16px">now $19.5K</span>
+      <span class="n" style="position: absolute; left: 60%; top: 0; font-size: 10px; color: #8B919C">entry $17.2K</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Amount<span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 6px 8px; color: #E6E8EC; font-size: 12px">0.5 ◎ ÷3</span></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Wallets<span style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 6px 8px; color: #E6E8EC; font-size: 12px">Snipers · 3</span></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Expires<span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 6px 8px; color: #E6E8EC; font-size: 12px">1h</span></label>
+    </div>
+    <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px"><input type="checkbox" checked>Attach exit strategy <b style="color: #8FE6B4">Runner</b> when it fills</label>
+    <button style="height: 40px; border: 0; border-radius: 10px; background: #2FBF85; color: #04140D; font-weight: 700; font-size: 13px">Arm dip buy · 0.5 ◎ at ≤ $14.0K</button>
+  </div>
+
+  <div style="height: 1px; background: #24272E"></div>
+  <div style="padding: 10px 12px 4px; display: flex; align-items: center"><span style="font-weight: 600">Armed</span><div style="flex: 1"></div><span style="font-size: 10.5px; color: #8B919C">all coins · 4</span></div>
+  <div style="display: flex; flex-direction: column; gap: 6px; padding: 0 12px 12px">
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="4">
+      <div style="background: #1C1F25; border: 1px solid #2C3038; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px">
+        <div style="display: flex; align-items: center; gap: 7px">
+          <span style="font-size: 10px; font-weight: 700; letter-spacing: .06em; border-radius: 5px; padding: 1px 6px; background: {{r.tagBg}}; color: {{r.tagFg}}">{{r.tag}}</span>
+          <b>{{r.sym}}</b><span style="color: #C9CDD4">{{r.what}}</span>
+          <div style="flex: 1"></div>
+          <button aria-label="Cancel trigger" style="border: 1px solid #5C1414; background: none; color: #FCA5A5; border-radius: 6px; padding: 0 6px">×</button>
+        </div>
+        <div style="height: 4px; background: #2C3038; border-radius: 4px; overflow: hidden"><div style="height: 4px; width: {{r.pct}}; background: {{r.bar}}"></div></div>
+        <div class="n" style="display: flex; font-size: 10.5px; color: #8B919C"><span>{{r.left}}</span><div style="flex: 1"></div><span>{{r.right}}</span></div>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":380,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { rows: [
+      { tag: 'DIP', tagBg: '#163126', tagFg: '#8FE6B4', sym: 'DABCAT', what: 'buy 0.5 ◎ ÷3', pct: '40%', bar: '#8FE6B4', left: 'now $19.5K → $14.0K · 28% away', right: '52m left' },
+      { tag: 'TP', tagBg: '#2A2412', tagFg: '#FFE08A', sym: 'PUMPKART', what: 'sell 50%', pct: '51%', bar: '#F2B84B', left: 'now $76.6K → $150K · 96% away', right: '3 wallets' },
+      { tag: 'TRAIL', tagBg: '#221A3A', tagFg: '#D2C5FF', sym: 'NPAD', what: 'sell 100%, −25% from peak', pct: '64%', bar: '#B9A6FF', left: 'peak $11.2K · stop $8.4K · now $9.1K', right: '8% to stop' },
+      { tag: 'DCA', tagBg: '#10233A', tagFg: '#CFE3FF', sym: 'DABCAT', what: 'buy 1 ◎ in 5 × 30s', pct: '40%', bar: '#60A5FA', left: '2 / 5 slices · 0.4 ◎ spent', right: 'next in 12s' },
+    ] };
+  }
+}
+</script>
+</body>
+</html>

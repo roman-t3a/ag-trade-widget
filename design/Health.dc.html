@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connection health footbar</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 420px; height: 1000px; box-sizing: border-box; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; gap: 14px">
+
+  <div style="background: #17191E; border: 1px solid #2C3038; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+    <div style="padding: 12px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #24272E">
+      <span style="font-size: 10px; color: #6E7480; letter-spacing: .08em">PNL · LIVE</span><b class="n" style="color: #8FE6B4; font-size: 16px">+$19.80</b><span class="n" style="color: #7FBF9C">+◎ 0.132 · +31.4%</span>
+    </div>
+    <div class="n" style="height: 28px; display: flex; align-items: center; gap: 0; padding: 0 6px; font-size: 10.5px; color: #8B919C; background: #111316">
+      <sc-for list="{{ok}}" as="s" hint-placeholder-count="4">
+        <span style="display: flex; align-items: center; gap: 5px; padding: 0 8px; height: 28px; border-right: 1px solid #1F2228"><i style="width: 6px; height: 6px; border-radius: 6px; background: {{s.c}}; display: inline-block"></i><span style="color: #6E7480">{{s.k}}</span><span style="color: #C9CDD4">{{s.v}}</span></span>
+      </sc-for>
+      <div style="flex: 1"></div><span style="color: #4B5160; padding: 0 6px">v3.5 ⌃</span>
+    </div>
+  </div>
+  <span style="font-size: 11px; color: #8B919C; margin-top: -6px">The footbar sits under the PnL card. 28px, one line, quiet when healthy. Click it for details.</span>
+
+  <span style="font-size: 10px; color: #6E7480; letter-spacing: .08em; margin-top: 4px">STATES</span>
+  <sc-for list="{{states}}" as="r" hint-placeholder-count="3">
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <div class="n" style="height: 28px; display: flex; align-items: center; padding: 0 6px; font-size: 10.5px; color: #8B919C; background: {{r.bg}}; border: 1px solid {{r.ln}}; border-radius: 8px">
+        <sc-for list="{{r.items}}" as="s" hint-placeholder-count="4">
+          <span style="display: flex; align-items: center; gap: 5px; padding: 0 7px"><i style="width: 6px; height: 6px; border-radius: 6px; background: {{s.c}}; display: inline-block"></i><span style="color: #6E7480">{{s.k}}</span><span style="color: {{s.vc}}">{{s.v}}</span></span>
+        </sc-for>
+        <div style="flex: 1"></div>
+        <span style="font-family: 'IBM Plex Sans', sans-serif; font-weight: 600; font-size: 10.5px; color: {{r.ac}}; padding: 0 6px">{{r.act}}</span>
+      </div>
+      <span style="font-size: 10.5px; color: #8B919C">{{r.note}}</span>
+    </div>
+  </sc-for>
+
+  <span style="font-size: 10px; color: #6E7480; letter-spacing: .08em; margin-top: 4px">CLICKED · DIAGNOSTICS</span>
+  <div style="background: #1C1F25; border: 1px solid #2C3038; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 18px 44px #000c">
+    <div style="display: flex; align-items: center; gap: 8px"><b style="font-size: 13px">Connection</b><span style="font-size: 10px; font-weight: 700; color: #15180F; background: #3DDC97; border-radius: 4px; padding: 0 6px">HEALTHY</span><div style="flex: 1"></div><span style="color: #8B919C">✕</span></div>
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <i style="width: 7px; height: 7px; border-radius: 7px; background: {{r.c}}; display: inline-block; flex: none"></i>
+        <div style="display: flex; flex-direction: column; min-width: 0; flex: 1"><span style="font-weight: 600">{{r.k}}</span><span class="n" style="font-size: 10.5px; color: #8B919C">{{r.s}}</span></div>
+        <svg width="70" height="20" viewBox="0 0 70 20"><polyline points="{{r.p}}" fill="none" stroke="{{r.c}}" stroke-width="1.5" stroke-opacity=".8"></polyline></svg>
+        <span class="n" style="width: 52px; text-align: right; color: #C9CDD4">{{r.v}}</span>
+      </div>
+    </sc-for>
+    <div style="border-top: 1px solid #2C3038; padding-top: 8px; display: flex; flex-direction: column; gap: 3px">
+      <span style="font-size: 10px; color: #6E7480; letter-spacing: .08em">LAST EVENTS</span>
+      <sc-for list="{{log}}" as="l" hint-placeholder-count="4"><span class="n" style="font-size: 10.5px; color: #8B919C"><span style="color: #6E7480">{{l.t}}</span>  <span style="color: {{l.c}}">{{l.m}}</span></span></sc-for>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Wake AG tab</button>
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Reconnect</button>
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #2C3038; background: #24272E; color: #8B919C">Copy report</button>
+    </div>
+    <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #C9CDD4"><input type="checkbox" checked>Re-open the backtester tab in the background if it gets closed or discarded</label>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":420,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const G = '#3DDC97', Y = '#F2B84B', R = '#F05252', N = '#4B5160';
+    const it = (k, v, c, vc) => ({ k, v, c, vc: vc || '#C9CDD4' });
+    const spark = (a) => a.map((y, i) => `${i * 7},${20 - y}`).join(' ');
+    return {
+      ok: [it('Relay', '38 ms', G), it('AG', '210 ms', G), it('Feed', '0.4 s', G), it('Orders', 'AG tab', G)],
+      states: [
+        { bg: '#111316', ln: '#1F2228', items: [it('Relay', '38 ms', G), it('AG', '210 ms', G), it('Feed', '0.4 s', G), it('Orders', 'AG tab', G)], act: '', ac: '#8B919C',
+          note: 'Healthy: everything green, nothing to do. Numbers only, no words.' },
+        { bg: '#1E1A10', ln: '#5A4A1C', items: [it('Relay', 'asleep', Y, '#FFE08A'), it('AG', 'direct', Y, '#FFE08A'), it('Feed', 'GMGN', G), it('Orders', 'paused', Y, '#FFE08A')], act: 'Wake ›', ac: '#FFE08A',
+          note: 'Degraded: the AG tab is frozen or closed. Buys/sells still go direct, but trigger orders and AG socket ticks wait for it.' },
+        { bg: '#231316', ln: '#5C2A33', items: [it('Relay', '38 ms', G), it('AG', '401', R, '#F59AA6'), it('Feed', '0.4 s', G), it('Orders', 'blocked', R, '#F59AA6')], act: 'Log in ›', ac: '#F59AA6',
+          note: 'Down: AG session expired. Trading buttons get a red outline and a one-line reason instead of failing on click.' },
+      ],
+      rows: [
+        { k: 'Relay · backtester tab', s: 'pinned · visible · v3.5 · 1 of 2 AG tabs (leader)', v: '38 ms', c: G, p: spark([6, 7, 5, 8, 6, 7, 6, 5, 7, 6, 6]) },
+        { k: 'AG API', s: 'session OK · wallets-list 200 · 0 errors / 5 min', v: '210 ms', c: G, p: spark([9, 8, 10, 9, 12, 9, 8, 9, 10, 9, 9]) },
+        { k: 'AG socket', s: 'connected 42m · 3 coins subscribed · 1 reconnect', v: '1.2 s', c: G, p: spark([4, 6, 5, 7, 4, 5, 6, 5, 4, 6, 5]) },
+        { k: 'Price feed', s: 'GMGN title ticks · AG ticks as backup', v: '0.4 s', c: G, p: spark([3, 4, 3, 5, 3, 4, 3, 4, 3, 3, 4]) },
+        { k: 'Order watcher', s: 'runs in the AG tab · 2 active orders · lease 2s old', v: '2 s', c: G, p: spark([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]) },
+      ],
+      log: [
+        { t: '14:02:11', m: 'socket reconnected after 3.1 s (resubscribed 3 coins)', c: '#C9CDD4' },
+        { t: '13:47:30', m: 'AG tab was frozen 41 s → woke on ping', c: '#FFE08A' },
+        { t: '13:47:30', m: '2 calls went direct while it slept (ack timeout)', c: '#FFE08A' },
+        { t: '13:20:02', m: 'second backtester tab opened → stays standby', c: '#8B919C' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

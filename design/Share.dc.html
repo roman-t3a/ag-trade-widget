@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shareable PnL card</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 440px; height: 480px; box-sizing: border-box; background: #0C0D10; font-family: 'IBM Plex Sans', sans-serif; color: #E6E8EC; display: flex; flex-direction: column; gap: 12px">
+  <div style="position: relative; height: 400px; border-radius: 16px; overflow: hidden; background: #0F1A14; border: 1px solid #24563C; padding: 22px; box-sizing: border-box; display: flex; flex-direction: column">
+    <svg width="440" height="400" viewBox="0 0 440 400" style="position: absolute; left: 0; top: 0" fill="none"><path d="M0 330 C60 320 90 300 130 290 S200 250 240 220 S320 120 360 110 S420 60 440 40" stroke="#8FE6B4" stroke-opacity=".18" stroke-width="3"></path><path d="M0 330 C60 320 90 300 130 290 S200 250 240 220 S320 120 360 110 S420 60 440 40 V400 H0Z" fill="#8FE6B4" fill-opacity=".05"></path></svg>
+    <div style="display: flex; align-items: center; gap: 8px; position: relative">
+      <span style="font-weight: 700; letter-spacing: .06em; color: {{accent}}">AG ⚡</span>
+      <div style="flex: 1"></div>
+      <span class="n" style="font-size: 12px; color: #7FBF9C">06 Oct 2026</span>
+    </div>
+    <div style="position: relative; margin-top: 34px; display: flex; align-items: baseline; gap: 10px">
+      <span style="font-size: 26px; font-weight: 700">PUMPKART</span>
+      <span style="font-size: 12px; color: #7FBF9C">3 wallets · 29 min</span>
+    </div>
+    <div class="n" style="position: relative; margin-top: 10px; font-size: 64px; font-weight: 700; line-height: 1; color: #8FE6B4">+87.8%</div>
+    <div class="n" style="position: relative; margin-top: 10px; font-size: 18px; color: #CFF7E1">+◎ 0.86 · +$129</div>
+    <div style="flex: 1"></div>
+    <div style="position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px">
+      <div><div style="font-size: 10px; color: #7FBF9C; letter-spacing: .08em">ENTRY</div><div class="n" style="font-size: 15px; font-weight: 600">$39.4K</div></div>
+      <div><div style="font-size: 10px; color: #7FBF9C; letter-spacing: .08em">EXIT</div><div class="n" style="font-size: 15px; font-weight: 600">$78.2K</div></div>
+      <div><div style="font-size: 10px; color: #7FBF9C; letter-spacing: .08em">INVESTED</div><div class="n" style="font-size: 15px; font-weight: 600">◎ 1.00</div></div>
+    </div>
+  </div>
+  <div style="display: flex; gap: 8px; align-items: center; font-size: 12px">
+    <label style="display: flex; align-items: center; gap: 5px; color: #C9CDD4"><input type="checkbox">Hide SOL amounts</label>
+    <div style="flex: 1"></div>
+    <button style="border: 1px solid #2C3038; background: #1F2228; border-radius: 8px; padding: 6px 12px">Copy image</button>
+    <button style="border: 0; background: #B8F04A; color: #15180F; border-radius: 8px; padding: 6px 12px; font-weight: 700">Download PNG</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#B8F04A","options":["#B8F04A","#5EEAD4","#FBBF24"]},"$preview":{"width":440,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() { return { accent: this.props.accent ?? '#B8F04A' }; }
+}
+</script>
+</body>
+</html>

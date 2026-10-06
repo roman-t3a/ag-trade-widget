@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.4.0
+// @version      3.5.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester and on GMGN.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
+// @grant        GM_openInTab
 // @grant        unsafeWindow
 // @connect      backtester.alphagardeners.xyz
 // @require      https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js
@@ -19,6 +20,12 @@
 (function () {
   'use strict';
   const MINT_RE = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
+  const VER = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '3.5.0';
+  const RELAY_LEASE = 9000;   // the backtester tab that owns the relay renews every 3s; a standby tab takes over after 9s
+  const RELAY_MAX_AGE = 700;  // the relay only runs calls younger than this: the GMGN tab goes direct after 1.5s without an ack
+  // Connection health shared inside a tab (the backtester tab fills it, the GMGN tab reads it via agPong / agHealth)
+  const HL = { sock: { ok: false, since: 0, last: 0, ping: 0, re: 0, subs: 0 }, sess: null, reconnect: null, log: [] };
+  const hlog = (m, lvl) => { HL.log.unshift({ t: Date.now(), m, lvl: lvl || 'i' }); HL.log.length = Math.min(HL.log.length, 30); };
 
   if (/(^|\.)gmgn\.ai$/.test(location.hostname)) {
     // ---------------------------------------------------------------- GMGN
@@ -49,23 +56,77 @@
       .then((r) => { if (method === 'POST') { bus.drop('/api/performance/'); bus.drop('/api/tokens/'); } return r; }); // positions changed
   };
 
-  // Orders placed from the GMGN widget arrive here; only whitelisted AG endpoints are executed.
+  // ---- relay: calls from the GMGN widget run here (whitelisted AG endpoints only).
+  // Exactly one backtester tab owns the relay (lease in agRelayOwner); other backtester tabs stand by, so a call
+  // is never executed twice. Protocol: agRpc → agRpcAck (immediately) → agRpcRes. A call older than RELAY_MAX_AGE
+  // is dropped: the sender has already gone direct.
+  const relayMe = Math.random().toString(36).slice(2, 10);
+  const ownerNow = () => { const l = GM_getValue('agRelayOwner', null); return l && Date.now() - l.at < RELAY_LEASE ? l : null; };
+  const iOwn = () => { const l = ownerNow(); return !!l && l.id === relayMe; };
+  let wasOwner = false;
+  function claimRelay() {
+    const l = ownerNow(), now = Date.now();
+    if (!l || l.id === relayMe) {
+      GM_setValue('agRelayOwner', { id: relayMe, at: now, v: VER, vis: !document.hidden });
+      if (!wasOwner) { wasOwner = true; hlog(l ? 'this tab owns the relay' : 'this tab took over the relay'); }
+    } else if (wasOwner) { wasOwner = false; hlog('another backtester tab owns the relay · this one stands by'); }
+  }
+  const seenRpc = new Set();
+  function sessNote(results, ms) {
+    const bad = results.find((r) => r && (r.status === 401 || r.status === 403));
+    const ok = results.some((r) => r && r.ok);
+    if (bad || ok) setSess({ ok: !bad, status: bad ? bad.status : 200, ms, at: Date.now() });
+  }
+  function setSess(x) {
+    const was = HL.sess;
+    HL.sess = x;
+    if (was && was.ok !== x.ok) hlog(x.ok ? 'AG session OK again' : `AG answered ${x.status}: logged out?`, x.ok ? 'i' : 'bad');
+  }
   GM_addValueChangeListener('agRpc', async (_k, _o, v, remote) => {
-    if (!remote || !v || !Array.isArray(v.calls) || Date.now() - v.at > 15000) return;
+    if (!remote || !v || !Array.isArray(v.calls) || seenRpc.has(v.id)) return;
+    if (!iOwn()) return;                                        // standby tab
+    const age = Date.now() - v.at;
+    if (age > (v.ackMs ? RELAY_MAX_AGE : 15000)) { hlog(`dropped a ${Math.round(age / 100) / 10}s old call (the GMGN tab went direct)`, 'warn'); return; }
+    seenRpc.add(v.id); if (seenRpc.size > 300) seenRpc.delete(seenRpc.values().next().value);
+    GM_setValue('agRpcAck', { id: v.id, at: Date.now() });
+    const t0 = Date.now();
     const results = await Promise.all(v.calls.map((c) => agPathAllowed(c.method, c.path)
       ? agLocalCall(c.method, c.path, c.body) : { status: 0, ok: false, j: { error: 'blocked path' } }));
+    sessNote(results, Date.now() - t0);
     GM_setValue('agRpcRes', { id: v.id, results });
   });
+  // health snapshot for the GMGN footbar: answered on agPing, also published on the heartbeat
+  const leaderFresh = () => { const l = GM_getValue('twLeader', null); return !!l && Date.now() - l.at < 10000; };
+  const snap = () => ({ v: VER, at: Date.now(), vis: !document.hidden, sess: HL.sess, sock: HL.sock, leader: leaderFresh(), log: HL.log.slice(0, 8) });
+  GM_addValueChangeListener('agPing', (_k, _o, v, remote) => { if (remote && v && iOwn()) GM_setValue('agPong', { id: v.id, h: snap() }); });
+  GM_addValueChangeListener('agCmd', (_k, _o, v, remote) => {
+    if (!remote || !v || Date.now() - v.at > 10000 || !iOwn()) return;
+    if (v.cmd === 'reconnect') { hlog('reconnect asked from the GMGN tab'); if (HL.reconnect) HL.reconnect(); checkSession(); }
+    if (v.cmd === 'reload') { hlog('reload asked from the GMGN tab'); setTimeout(() => location.reload(), 300); }
+    if (v.cmd === 'wake') checkSession();
+  });
   // Heartbeat that survives Chrome's background-tab throttling (worker timer) and freezing (Web Lock).
-  const beat = () => GM_setValue('agRelayAt', Date.now());
+  const beat = () => { GM_setValue('agRelayAt', Date.now()); claimRelay(); if (iOwn()) GM_setValue('agHealth', snap()); };
   beat();
-  setInterval(beat, 5000);
+  setInterval(beat, 3000);
   try {
-    const wk = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),5000)'], { type: 'text/javascript' })));
+    const wk = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),3000)'], { type: 'text/javascript' })));
     wk.onmessage = () => { if (document.hidden) beat(); };
   } catch (_) {}
   try { if (navigator.locks) navigator.locks.request('ag-trade-keepalive', () => new Promise(() => {})); } catch (_) {}
   GM_addValueChangeListener('twPing', (_k, _o, _v, remote) => { if (remote) beat(); });
+  document.addEventListener('visibilitychange', beat);
+  // AG session: one cheap authenticated GET a minute (by the relay owner only)
+  async function checkSession() {
+    if (!iOwn()) return;
+    const t0 = Date.now();
+    try {
+      const r = await W.fetch('/api/performance/wallets-list?source=live', { credentials: 'same-origin' });
+      setSess({ ok: r.ok, status: r.status, ms: Date.now() - t0, at: Date.now() });
+    } catch (e) { setSess({ ok: false, status: 0, ms: Date.now() - t0, at: Date.now() }); }
+  }
+  setTimeout(checkSession, 1500);
+  setInterval(checkSession, 60000);
 
   // Token selected in the backtester: #token/<mint> in the URL, else the active Live Terminal card.
   const cardRow = (el) => {
@@ -133,6 +194,7 @@
       hiddenCoins: [],
       hiddenMeta: {},    // mint → { t: hidden at (ms), n: AG signals known at that time }
       unhideOnSignal: true, // a hidden coin comes back when AG fires a new signal on it
+      autoReopen: true,  // GMGN: re-open the backtester tab in the background when it is gone for 30s
       alerts: {},
       scale: 1,          // widget size (drag the corner grip; double-click resets)
       autoFit: true,     // shrink to fit the screen height when needed
@@ -175,33 +237,71 @@
         ontimeout: () => res({ status: 0, ok: false, j: { error: 'timeout' } }),
       }));
     }
-    const pending = new Map();
-    if (env !== 'ag') GM_addValueChangeListener('agRpcRes', (_k, _o, v) => { const f = v && pending.get(v.id); if (f) { pending.delete(v.id); f(v.results); } });
-    function relay(calls) {
+    // GMGN side of the relay. One backtester tab owns it (agRelayOwner lease). Each call is acked within ms;
+    // no ack in H.ackMs → the call never ran there, so it goes direct (orders included). Acked but no result
+    // → an order is NOT resent (it may have executed), reads go direct.
+    const H = { ackMs: 1500, lostMs: 20000, pingMs: 5000, reopenAfter: 30000, reopenEvery: 60000, skipAfterMiss: 15000 };
+    const hs = { rtt: null, pingId: null, pingAt: 0, pongAt: 0, h: null, dstat: null, auth: null, log: [], st: '', reopenAt: 0 };
+    const hl = (m, lvl) => { hs.log.unshift({ t: Date.now(), m, lvl: lvl || 'i' }); hs.log.length = Math.min(hs.log.length, 30); };
+    const pending = new Map(), acks = new Map();
+    if (env !== 'ag') {
+      GM_addValueChangeListener('agRpcRes', (_k, _o, v) => { const f = v && pending.get(v.id); if (f) { pending.delete(v.id); acks.delete(v.id); f({ r: v.results }); } });
+      GM_addValueChangeListener('agRpcAck', (_k, _o, v) => { const f = v && acks.get(v.id); if (f) { acks.delete(v.id); f(); } });
+      GM_addValueChangeListener('agPong', (_k, _o, v) => {
+        if (!v || v.id !== hs.pingId) return;
+        hs.rtt = Date.now() - hs.pingAt; hs.pongAt = Date.now(); hs.h = v.h; relayDownAt = 0; healthTick();
+      });
+      GM_addValueChangeListener('agHealth', (_k, _o, v, remote) => { if (remote && v) hs.h = v; });
+    }
+    const relayInfo = () => {
+      const o = GM_getValue('agRelayOwner', null), beatAt = GM_getValue('agRelayAt', 0) || 0, now = Date.now();
+      if (o && now - o.at < 30000) return { mode: 'v2', o, age: now - o.at };
+      if (now - beatAt < 30000) return { mode: 'legacy', age: now - beatAt }; // backtester tab still runs a pre-3.5 script
+      return { mode: 'down', age: beatAt ? now - beatAt : null, o };
+    };
+    function relay(calls, legacy) {
       return new Promise((res) => {
         const rid = id();
+        let acked = !!legacy;
         pending.set(rid, res);
-        GM_setValue('agRpc', { id: rid, at: Date.now(), calls });
-        setTimeout(() => { if (pending.has(rid)) { pending.delete(rid); res(null); } }, 20000);
+        acks.set(rid, () => { acked = true; });
+        GM_setValue('agRpc', { id: rid, at: Date.now(), ackMs: legacy ? undefined : H.ackMs, calls });
+        if (!legacy) setTimeout(() => { if (!acked && pending.has(rid)) { pending.delete(rid); acks.delete(rid); res({ noAck: true }); } }, H.ackMs);
+        setTimeout(() => { if (pending.has(rid)) { pending.delete(rid); acks.delete(rid); res({ lost: true }); } }, H.lostMs);
       });
     }
-    // isOrder: never re-send an order through a second path after a relay timeout (avoid double buys)
+    function noteAuth(results, ms, via) {
+      const bad = results.find((r) => r && (r.status === 401 || r.status === 403));
+      if (bad || results.some((r) => r && r.ok)) {
+        const was = hs.auth;
+        hs.auth = { ok: !bad, status: bad ? bad.status : 200, ms, at: Date.now(), via };
+        if (was && was.ok !== hs.auth.ok) hl(hs.auth.ok ? 'AG session OK again' : `AG answered ${hs.auth.status}: log in on the backtester`, hs.auth.ok ? 'i' : 'bad');
+      }
+    }
+    // isOrder: never re-send an order through a second path after it was acked (avoid double buys)
     let relayDownAt = 0;
     async function call(calls, isOrder) {
       if (env === 'ag') return Promise.all(calls.map((c) => localCall(c.method, c.path, c.body)));
-      let alive = Date.now() - (GM_getValue('agRelayAt', 0) || 0) < 30000;
-      if (!alive && Date.now() - relayDownAt > 20000) { // nudge a throttled backtester tab once, then re-check
-        GM_setValue('twPing', Date.now());
-        await new Promise((r) => setTimeout(r, 1500));
-        alive = Date.now() - (GM_getValue('agRelayAt', 0) || 0) < 30000;
-        if (!alive) relayDownAt = Date.now(); // no backtester tab: go direct for the next 20s instead of waiting 1.5s every call
-      }
-      if (alive) {
-        const r = await relay(calls);
-        if (r) return r;
+      const ri = relayInfo(), t0 = Date.now();
+      if (ri.mode === 'legacy') {
+        const r = await relay(calls, true);
+        if (r.r) { noteAuth(r.r, Date.now() - t0, 'relay'); return r.r; }
         if (isOrder) return calls.map(() => ({ status: 0, ok: false, j: { error: 'no answer from the backtester tab – check Positions before retrying' } }));
+      } else if (ri.mode === 'v2' && Date.now() - relayDownAt > H.skipAfterMiss) {
+        const r = await relay(calls);
+        if (r.r) { noteAuth(r.r, Date.now() - t0, 'relay'); return r.r; }
+        if (r.noAck) { relayDownAt = Date.now(); hl(`backtester tab did not answer in ${H.ackMs / 1000}s → sent direct`, 'warn'); GM_setValue('twPing', Date.now()); }
+        else if (isOrder) { hl('order acked by the backtester tab but no result in 20s', 'bad'); return calls.map(() => ({ status: 0, ok: false, j: { error: 'the backtester tab took the order but did not answer – check Positions before retrying' } })); }
       }
-      return Promise.all(calls.map(direct));
+      const t1 = Date.now(), out = await Promise.all(calls.map(direct));
+      noteAuth(out, Date.now() - t1, 'direct');
+      hs.dstat = { at: Date.now(), ms: Date.now() - t1, ok: out.some((r) => r.ok) };
+      return out;
+    }
+    // A buy / sell is refused up front when AG just told us the session is gone (instead of failing per wallet).
+    function authBlock() {
+      const a = env === 'ag' ? HL.sess : (hs.h && hs.h.sess && (!hs.auth || hs.h.sess.at > hs.auth.at) ? hs.h.sess : hs.auth);
+      return a && !a.ok && (a.status === 401 || a.status === 403) && Date.now() - a.at < 120000 ? `AG session expired (${a.status}): log in on the backtester, then retry` : '';
     }
 
     // ---------------------------------------------------------- data
@@ -431,10 +531,26 @@
         for (const m of w) if (!subs.has(m)) { sock.emit('subscribe:token', m); subs.add(m); }
         for (const m of [...subs]) if (!w.has(m)) { sock.emit('unsubscribe:token', m); subs.delete(m); }
       };
-      sock.on('connect', () => { stream.ok = true; subs.clear(); sync(); render(); });
-      sock.on('disconnect', () => { stream.ok = false; render(); });
+      const S = HL.sock;
+      sock.on('connect', () => {
+        const back = S.since > 0; stream.ok = true; S.ok = true;
+        if (back) { S.re++; hlog(`AG socket reconnected${S.down ? ' after ' + ((Date.now() - S.down) / 1000).toFixed(1) + ' s' : ''} · resubscribing`); }
+        S.since = Date.now(); S.down = 0; subs.clear(); sync(); render();
+      });
+      sock.on('disconnect', (why) => { stream.ok = false; S.ok = false; S.down = Date.now(); hlog('AG socket disconnected' + (why ? ' (' + why + ')' : ''), 'warn'); render(); });
+      try { if (sock.io && typeof sock.io.on === 'function') sock.io.on('ping', () => { S.ping = Date.now(); }); } catch (_) {}
+      const reconnect = () => { try { if (typeof sock.disconnect === 'function') sock.disconnect(); setTimeout(() => { try { sock.connect(); } catch (_) {} }, 400); } catch (_) {} };
+      HL.reconnect = reconnect;
+      // watchdog: "connected" but silent (no server ping, no event) for 75s → reconnect; socket.io handles the backoff
+      setInterval(() => {
+        S.subs = subs.size;
+        if (!sock.connected || !S.since) return;
+        const lastSign = Math.max(S.since, S.last, S.ping);
+        if (Date.now() - lastSign > 75000) { hlog('AG socket silent for 75 s → reconnecting', 'warn'); S.since = Date.now(); reconnect(); }
+      }, 15000);
       setInterval(sync, 2000);
       const onData = (ev) => (d) => {
+        S.last = Date.now();
         if (DEBUG) console.log('[AG widget]', ev, d);
         const mint = d && (d.tokenAddress || d.mint);
         if (!mint) return;
@@ -525,6 +641,7 @@
     async function execBuy({ mint, symb, wallets: ws, amount, split, mode, note, interactive, strat, jitter }) {
       mode = mode || st.mode;
       const live = mode === 'live', S = SF();
+      { const ab = authBlock(); if (ab) { if (interactive !== false) toast(ab, true); return { ok: 0, err: ab }; } }
       if (live && !ws.length) { if (interactive) toast('Pick at least one wallet to buy with', true); return { ok: 0, err: 'no wallet' }; }
       let { legs, skipped } = live ? buyLegs(amount, ws, split, jitter) : { legs: [{ w: null, amt: amount }], skipped: [] };
       if (!legs.length) { const m = `no selected wallet can cover it (+${st.reserve} SOL reserve) · ${skipped.join(', ')}`; if (interactive) toast('Buy: ' + m, true); return { ok: 0, err: m }; }
@@ -595,6 +712,7 @@
     // Sells: `wallets` = addresses to sell from (every holder of the coin when null)
     async function execSell({ mint, symb, pct, wallets: only, mode, interactive, label }) {
       mode = mode || st.mode;
+      { const ab = authBlock(); if (ab) { if (interactive !== false) toast(ab, true); return { ok: 0, err: ab }; } }
       pct = Math.min(100, Number(pct));
       if (!(pct > 0)) return { ok: 0 };
       let ws;
@@ -1424,6 +1542,24 @@
     #agtw .tlr .w{font-family:'IBM Plex Sans',Inter,system-ui,sans-serif;color:#C9CDD4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     #agtw .conn{background:var(--bg3);border:1px solid var(--ln2);border-radius:9px;padding:7px 9px;display:flex;flex-direction:column;gap:4px}
     #agtw .cr{display:flex;align-items:center;gap:7px;font-size:11px}
+    #agtw .hf{display:flex;align-items:stretch;height:24px;padding-right:14px;border-top:1px solid var(--ln2);background:#111316;font:500 10px/24px 'IBM Plex Mono',ui-monospace,Menlo,monospace;color:var(--mut2);border-radius:0 0 13px 13px}
+    #agtw .hf.y{background:#1E1A10;border-top-color:#5A4A1C}#agtw .hf.r{background:#231316;border-top-color:#5C2A33}
+    #agtw .hfi{flex:1;min-width:0;display:flex;align-items:center;background:none;border:0;padding:0 4px;cursor:pointer;color:inherit;font:inherit;overflow:hidden;text-align:left}
+    #agtw .hfi>span{display:flex;align-items:center;gap:4px;padding:0 5px;white-space:nowrap;border-right:1px solid #1F2228;line-height:14px;min-width:0}
+    #agtw .hfi>span:last-child{border-right:0}
+    #agtw .hf .k{color:#6E7480}#agtw .hf .v{color:#C9CDD4}#agtw .hf .v.y{color:#FFE08A}#agtw .hf .v.r{color:#F59AA6}
+    #agtw i.hdt{width:6px;height:6px;border-radius:6px;display:inline-block;flex:none;background:#4B5160}
+    #agtw i.hdt.g{background:#3DDC97}#agtw i.hdt.y{background:#F2B84B}#agtw i.hdt.r{background:#F05252}
+    #agtw .hfa{background:none;border:0;font:600 10px 'IBM Plex Sans',Inter,system-ui,sans-serif;padding:0 6px;cursor:pointer;color:var(--mut2);white-space:nowrap;flex:none}
+    #agtw .hf.y .hfi>span.g .k,#agtw .hf.r .hfi>span.g .k,#agtw .hf.y .hfi>span.n .k,#agtw .hf.r .hfi>span.n .k{display:none}#agtw.wide .hf .hfi>span .k{display:inline}
+    #agtw .hf.y .hfa{color:#FFE08A}#agtw .hf.r .hfa{color:#F59AA6}
+    #agtw .hhr{display:flex;align-items:center;gap:8px}
+    #agtw .hhr .hn{display:flex;flex-direction:column;min-width:0;flex:1}#agtw .hhr .hn b{font-weight:600;font-size:11.5px}
+    #agtw .hhr .hn span{font-size:10.5px;color:var(--mut2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #agtw .hhr .hv{width:54px;text-align:right;color:#C9CDD4;font-size:11px}
+    #agtw .hlg{border-top:1px solid var(--ln2);padding-top:6px;display:flex;flex-direction:column;gap:2px;font-size:10.5px}
+    #agtw .hlg .warn{color:#FFE08A}#agtw .hlg .bad{color:#F59AA6}
+    #agtw .hbadge{font-size:9.5px;font-weight:700;letter-spacing:.04em;color:#15180F;border-radius:4px;padding:0 6px}
     #agtw .dot.ok{background:#3DDC97}#agtw .dot.warn{background:var(--warn)}#agtw .dot.bad{background:#F05252}
     #agtw .keys{display:flex;flex-wrap:wrap;gap:4px 10px}
     #agtw kbd{font:600 10px 'IBM Plex Mono',monospace;background:#24272E;border:1px solid #3A3F48;border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:#E6E8EC}
@@ -2187,14 +2323,14 @@
           ${sm && sm.pnl != null ? `<span class="pill n">${sgn(sm.pnl)}${sm.pnl.toFixed(1)}%</span><button class="ib shb" data-a="p:share" title="Share this PnL as an image">${ICON.share}</button>` : ''}</div>
         <div class="dl">${realized != null && Math.abs(realized) > 1e-6 ? `<span>Realized</span><span class="n">${usdRate ? sgn(realized) + usdV(realized * usdRate) : sol(realized) + ' ◎'}</span><i>·</i>` : ''}${live && S.dailyLoss > 0 && daily && daily.sum != null ? `<span title="Positions closed today vs your daily loss limit">Today</span><span class="n ${daily.sum < 0 ? 'dn' : 'up'}">${sgn(daily.sum)}${sol(daily.sum)} / −${S.dailyLoss} ◎</span>` : ''}<span class="sp"></span>${usdRate ? `<span>SOL</span><span class="n">$${usdRate.toFixed(1)}</span>` : ''}</div></div>`;
 
-      const panel = ed ? '' : ui.panel === 'wal' ? pickerHtml() : ui.panel === 'set' ? settingsHtml() : ui.panel === 'trig' ? trigHtml(orders) : ui.panel === 'pos' ? posHtml(orders) : ui.panel === 'info' ? infoHtml() : ui.panel === 'share' ? shareHtml() : '';
+      const panel = ed ? '' : ui.panel === 'wal' ? pickerHtml() : ui.panel === 'set' ? settingsHtml() : ui.panel === 'trig' ? trigHtml(orders) : ui.panel === 'pos' ? posHtml(orders) : ui.panel === 'info' ? infoHtml() : ui.panel === 'share' ? shareHtml() : ui.panel === 'health' ? healthHtml() : '';
       return `${groupsRow}${head}${panel}${ed ? '' : alertsHtml()}
         <div class="bd">${tokLine}
           <div class="sec sbuy">${buyHead}<div class="g4">${buyTiles}</div>${ed ? edBuy : txLine('buy')}${cu}</div>
           ${!ed && st.adv ? advHtml(mint, orders) : ''}
           <div class="sep"></div>
           <div class="sec ssell">${sellHead}<div class="g4">${sellTiles}</div>${ed ? edSell : txLine('sell')}</div></div>
-        ${ed ? '<div class="eh mut sm">Tab → next value · Enter saves · Esc cancels · empty a slot to hide it. ◎ / $ / % each keep their own 8 values.</div>' : foot}`;
+        ${ed ? '<div class="eh mut sm">Tab → next value · Enter saves · Esc cancels · empty a slot to hide it. ◎ / $ / % each keep their own 8 values.</div>' : foot + footbarHtml()}`;
     }
 
     function pickerHtml() {
@@ -2318,6 +2454,160 @@
         ${rows.some((r) => r.pnl < 0) ? '<div class="sh"><span class="mut sm">Click a coin to open it</span><span class="sp"></span><button class="btn sm danger" data-a="selllosers">Sell all losers</button></div>' : ''}</div>`;
     }
 
+
+    // ---------------------------------------------------------- connection health: footbar + panel
+    const agoS = (ms) => (ms == null || ms < 0 ? '--' : ms < 1000 ? '<1s' : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's' : ms < 3600e3 ? Math.round(ms / 60000) + 'm' : Math.round(ms / 3600e3) + 'h');
+    const msS = (ms) => (ms == null ? '--' : Math.round(ms) + 'ms');
+    hs.hist = { relay: [], ag: [] };
+    const pushHist = (k, v) => { if (v == null) return; const a = hs.hist[k]; a.push(v); if (a.length > 24) a.shift(); };
+    const activeOrders = () => loadOrders().filter((o) => o.status === 'active').length;
+    function authNow() {
+      if (env === 'ag') return HL.sess;
+      const h = hs.h && hs.h.sess;
+      return h && (!hs.auth || h.at > hs.auth.at) ? h : hs.auth;
+    }
+    function relayState() { // GMGN: up | asleep | legacy | down | off
+      const ri = relayInfo();
+      if (ri.mode === 'legacy') return { s: 'legacy', ri };
+      if (ri.mode === 'down') return { s: ri.age == null ? 'off' : 'down', ri };
+      return { s: Date.now() - hs.pongAt < 12000 ? 'up' : 'asleep', ri };
+    }
+    function healthItems() {
+      const now = Date.now(), items = [], act = activeOrders(), a = authNow();
+      const it = (k, v, c) => items.push({ k, v, c });
+      let action = null;
+      const authBad = a && !a.ok && (a.status === 401 || a.status === 403) && now - a.at < 120000;
+      if (env === 'ag') {
+        const o = ownerNow();
+        it('Relay', iOwn() ? 'this tab' : o ? 'standby' : 'claiming', iOwn() ? 'g' : o ? 'n' : 'y');
+        it('AG', a ? (a.ok ? msS(a.ms) : String(a.status || 'error')) : '--', a ? (a.ok ? 'g' : 'r') : 'n');
+        const S = HL.sock;
+        it('Feed', S.ok ? agoS(now - Math.max(S.last, S.ping, S.since)) : 'offline', S.ok ? 'g' : 'y');
+        const l = GM_getValue('twLeader', null), lf = l && now - l.at < 10000;
+        it('Orders', lf ? (l.id === me ? 'this tab' : 'other tab') : act ? 'paused' : 'idle', lf ? 'g' : act ? 'y' : 'n');
+        if (authBad) action = { a: 'login', l: 'Log in' };
+      } else {
+        const rs = relayState(), h = hs.h;
+        if (rs.s === 'up') it('Relay', msS(hs.rtt), hs.rtt > 800 ? 'y' : 'g');
+        else it('Relay', { asleep: 'asleep', legacy: 'old tab', down: 'closed', off: 'off' }[rs.s], rs.s === 'off' ? 'n' : 'y');
+        if (authBad) it('AG', String(a.status), 'r');
+        else if (rs.s !== 'up' && rs.s !== 'legacy') it('AG', hs.dstat ? 'direct' : '--', hs.dstat ? (hs.dstat.ok ? 'y' : 'r') : 'n');
+        else it('AG', a && a.ok ? msS(a.ms) : '--', a && a.ok ? 'g' : 'n');
+        const tk = getMint() && ticks[getMint()];
+        it('Feed', tk ? (now - tk.at < 60000 ? agoS(now - tk.at) : 'quiet') : '--', tk && now - tk.at < 60000 ? 'g' : 'n');
+        const lead = rs.s === 'up' ? !!(h && h.leader) : (() => { const l = GM_getValue('twLeader', null); return !!l && now - l.at < 10000; })();
+        it('Orders', authBad && act ? 'blocked' : lead ? 'AG tab' : act ? 'paused' : 'idle', authBad && act ? 'r' : lead ? 'g' : act ? 'y' : 'n');
+        const ov = (rs.ri.o && rs.ri.o.v) || (h && h.v);
+        if (authBad) action = { a: 'login', l: 'Log in' };
+        else if (rs.s === 'legacy' || (rs.s === 'up' && ov && ov !== VER)) { action = { a: 'reload', l: `Reload AG tab${ov ? ' (' + ov + ' → ' + VER + ')' : ''}` }; }
+        else if (rs.s === 'asleep') action = { a: 'wake', l: 'Wake' };
+        else if (rs.s === 'down' || rs.s === 'off') action = { a: 'open', l: 'Open AG' };
+      }
+      const level = items.some((x) => x.c === 'r') ? 'r' : items.some((x) => x.c === 'y') || (action && action.a === 'reload') ? 'y' : 'g';
+      return { items, action, level };
+    }
+    function footbarHtml() {
+      const { items, action, level } = healthItems();
+      return `<div class="hf ${level}"><button class="hfi" data-a="p:health" title="Connection health · click for details">${items.map((x) => `<span class="${x.c}" title="${x.k}"><i class="hdt ${x.c}"></i><span class="k">${x.k}</span><span class="v ${x.c === 'y' || x.c === 'r' ? x.c : ''}">${escH(x.v)}</span></span>`).join('')}</button>${action ? `<button class="hfa" data-ha="${action.a}">${escH(action.l)} ›</button>` : ''}</div>`;
+    }
+    const spark = (a, c) => { if (!a || a.length < 2) return '<svg width="60" height="18"></svg>'; const mx = Math.max(...a) || 1; return `<svg width="60" height="18" viewBox="0 0 60 18"><polyline points="${a.map((v, i) => `${(i * 60) / (a.length - 1)},${(17 - (v / mx) * 15).toFixed(1)}`).join(' ')}" fill="none" stroke="${c}" stroke-width="1.5" stroke-opacity=".85"></polyline></svg>`; };
+    const hcol = { g: '#3DDC97', y: '#F2B84B', r: '#F05252', n: '#4B5160' };
+    function healthHtml() {
+      const { items, level } = healthItems(), now = Date.now(), byK = Object.fromEntries(items.map((x) => [x.k, x]));
+      const a = authNow(), act = activeOrders();
+      let rows;
+      if (env === 'ag') {
+        const o = ownerNow(), S = HL.sock;
+        rows = [
+          ['Relay · this backtester tab', iOwn() ? 'owns the relay: answers the GMGN widget' : o ? `standby · another backtester tab answers (v${o.v || '?'})` : 'claiming the relay…', byK.Relay, '', null],
+          ['AG API', a ? `session ${a.ok ? 'OK' : a.status} · checked ${agoS(now - a.at)} ago` : 'not checked yet', byK.AG, a && a.ok ? msS(a.ms) : '--', 'ag'],
+          ['AG socket', S.ok ? `connected ${agoS(now - S.since)} · ${S.subs} coin${S.subs === 1 ? '' : 's'} · ${S.re} reconnect${S.re === 1 ? '' : 's'}` : 'disconnected · socket.io is retrying', byK.Feed, S.ok ? agoS(now - Math.max(S.last, S.ping, S.since)) : '--', null],
+          ['Order watcher', `${byK.Orders.v === 'idle' ? 'no active orders' : byK.Orders.v} · ${act} active`, byK.Orders, '', null],
+        ];
+      } else {
+        const rs = relayState(), h = hs.h || {}, o = rs.ri.o || {}, S = h.sock || {};
+        const rsub = { up: `${o.vis || h.vis ? 'visible' : 'in the background'} · v${o.v || h.v || '?'} · one owner, others on standby`, asleep: 'tab exists but did not answer the last pings (frozen by Chrome?)', legacy: 'still runs an older script: reload it once', down: `gone for ${agoS(rs.ri.age)} · buys / sells go direct`, off: 'no backtester tab seen yet · buys / sells go direct' }[rs.s];
+        rows = [
+          ['Relay · backtester tab', rsub, byK.Relay, rs.s === 'up' ? msS(hs.rtt) : '--', 'relay'],
+          ['AG API', a ? `session ${a.ok ? 'OK' : a.status} · ${a.via === 'direct' ? 'direct call' : 'checked'} ${agoS(now - a.at)} ago` : 'no call yet', byK.AG, a && a.ok ? msS(a.ms) : '--', 'ag'],
+          ['AG socket', h.sock ? (S.ok ? `connected ${agoS(now - S.since)} · ${S.subs} coin${S.subs === 1 ? '' : 's'} · ${S.re} reconnect${S.re === 1 ? '' : 's'}` : 'disconnected · retrying') : 'runs in the backtester tab', { c: h.sock ? (S.ok ? 'g' : 'y') : 'n' }, h.sock && S.ok ? agoS(now - Math.max(S.last || 0, S.ping || 0, S.since || 0)) : '--', null],
+          ['Price feed', `GMGN title ticks${stream.at ? ' · AG ticks ' + agoS(now - stream.at) + ' ago' : ''}`, byK.Feed, byK.Feed.v, null],
+          ['Order watcher', `${byK.Orders.v === 'AG tab' ? 'runs in the backtester tab' : byK.Orders.v === 'idle' ? 'no active orders' : 'needs the backtester tab'} · ${act} active`, byK.Orders, '', null],
+        ];
+      }
+      const logs = (env === 'ag' ? HL.log : hs.log.concat((hs.h && hs.h.log) || [])).slice().sort((x, y) => y.t - x.t).slice(0, 6);
+      const tm = (t) => new Date(t).toLocaleTimeString([], { hour12: false });
+      const lv = { g: ['HEALTHY', '#3DDC97'], y: ['DEGRADED', '#F2B84B'], r: ['DOWN', '#F05252'] }[level];
+      return `<div class="olp pnl"><div class="sh"><b>Connection</b><span class="hbadge" style="background:${lv[1]}">${lv[0]}</span><span class="sp"></span><button class="ib" data-a="panelx" aria-label="Close">${ICON.x}</button></div>
+        ${rows.map(([k, sub, x, v, hk]) => `<div class="hhr"><i class="hdt ${x ? x.c : 'n'}"></i><div class="hn"><b>${k}</b><span class="n">${escH(sub)}</span></div>${hk ? spark(hs.hist[hk], hcol[x ? x.c : 'n']) : ''}<span class="hv n">${escH(v || '')}</span></div>`).join('')}
+        <div class="hlg"><span class="lb">LAST EVENTS</span>${logs.length ? logs.map((l) => `<span class="n ${l.lvl}"><span class="mut">${tm(l.t)}</span>  ${escH(l.m)}</span>`).join('') : '<span class="mut">nothing yet</span>'}</div>
+        <div class="g3">${env === 'ag' ? '' : '<button class="btn sm" data-ha="wake">Wake AG tab</button>'}<button class="btn sm" data-ha="reconnect">Reconnect</button><button class="btn sm" data-ha="copy">Copy report</button></div>
+        ${env === 'ag' ? '' : `<label class="ck"><input type="checkbox" data-s="autoReopen" ${st.autoReopen ? 'checked' : ''}>Re-open the backtester tab in the background if it is gone for 30 s</label>`}
+        <span class="mut sm">Tip: Chrome → Settings → Performance → “Always keep these sites active” → add backtester.alphagardeners.xyz so Chrome never freezes it.</span></div>`;
+    }
+    function openAG(active) {
+      try { if (typeof GM_openInTab === 'function') return GM_openInTab(AG + '/', { active: !!active, insert: true, setParent: true }); } catch (_) {}
+      window.open(AG + '/', '_blank');
+    }
+    function pingRelay() {
+      if (env === 'ag' || relayInfo().mode !== 'v2') return;
+      hs.pingId = id(); hs.pingAt = Date.now();
+      GM_setValue('agPing', { id: hs.pingId, at: hs.pingAt });
+    }
+    function healthAct(a) {
+      if (a === 'login') { window.open(AG + '/', '_blank'); return toast('Log in on the backtester, then come back'); }
+      if (a === 'open') { openAG(true); hl('opened the backtester tab'); return toast('Opening the backtester…'); }
+      if (a === 'reload') {
+        if (env !== 'ag' && relayState().s === 'legacy') return toast('The backtester tab runs an older version: reload it once (F5)', true);
+        GM_setValue('agCmd', { cmd: 'reload', at: Date.now() }); hl('asked the backtester tab to reload'); return toast('Reloading the backtester tab…');
+      }
+      if (a === 'reconnect') {
+        if (env === 'ag') { if (HL.reconnect) HL.reconnect(); bus.drop('/api/'); hlog('manual reconnect'); }
+        else { GM_setValue('agCmd', { cmd: 'reconnect', at: Date.now() }); relayDownAt = 0; hl('asked the backtester tab to reconnect'); pingRelay(); }
+        loadWallets(true); loadPos(); return toast('Reconnecting…');
+      }
+      if (a === 'wake') {
+        GM_setValue('twPing', Date.now()); GM_setValue('agCmd', { cmd: 'wake', at: Date.now() }); relayDownAt = 0; pingRelay(); toast('Waking the backtester tab…');
+        return setTimeout(() => { const s2 = relayState().s; if (s2 === 'up') { hl('backtester tab woke up'); toast('Backtester tab is back'); } else if (s2 === 'down' || s2 === 'off' || s2 === 'asleep') { hl('no answer → opened a fresh backtester tab', 'warn'); openAG(false); toast('No answer: opened a backtester tab in the background'); } render(); }, 2500);
+      }
+      if (a === 'copy') {
+        const rep = JSON.stringify({ v: VER, env, at: new Date().toISOString(), relay: env === 'ag' ? { own: iOwn(), owner: ownerNow() } : { info: relayInfo(), rtt: hs.rtt, pongAgo: hs.pongAt ? Date.now() - hs.pongAt : null, h: hs.h }, auth: authNow(), direct: hs.dstat, sock: env === 'ag' ? HL.sock : null, log: env === 'ag' ? HL.log : hs.log }, null, 1);
+        try { navigator.clipboard.writeText(rep); toast('Connection report copied'); } catch (_) { toast('Could not copy', true); }
+      }
+    }
+    let lastRs = '';
+    function healthTick() {
+      if (env !== 'ag') {
+        const rs = relayState().s;
+        if (rs !== lastRs) {
+          if (lastRs) hl({ up: 'backtester tab connected', asleep: 'backtester tab stopped answering pings', legacy: 'backtester tab runs an older script', down: 'backtester tab is gone', off: 'no backtester tab' }[rs], rs === 'up' ? 'i' : 'warn');
+          lastRs = rs;
+        }
+        if (rs === 'up') { pushHist('relay', hs.rtt); const s2 = hs.h && hs.h.sess; if (s2 && s2.ok) pushHist('ag', s2.ms); }
+        autoReopen();
+      } else if (HL.sess && HL.sess.ok) pushHist('ag', HL.sess.ms);
+      const hi = healthItems(), key = hi.level + hi.items.map((x) => x.k + x.c).join('') + (hi.action ? hi.action.a : '');
+      if (key !== hs.key || ui.panel === 'health') { hs.key = key; render(); }
+    }
+    function autoReopen() {
+      if (env === 'ag' || !st.autoReopen || document.hidden) return;
+      const ri = relayInfo(), beatAt = GM_getValue('agRelayAt', 0) || 0, now = Date.now();
+      if (ri.mode !== 'down' || !beatAt || now - beatAt < H.reopenAfter || now - beatAt > 2 * 3600e3) return;
+      if (now - (GM_getValue('agReopenAt', 0) || 0) < H.reopenEvery) return;
+      GM_setValue('agReopenAt', now);
+      hl(`backtester tab gone for ${agoS(now - beatAt)} → re-opened it in the background`, 'warn');
+      toast('Backtester tab was gone: re-opened it in the background (turn off in the connection panel)');
+      openAG(false);
+    }
+    function startHealth() {
+      if (env !== 'ag') {
+        setInterval(() => { if (!document.hidden) pingRelay(); }, H.pingMs);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) pingRelay(); });
+        setTimeout(pingRelay, 300);
+      }
+      setInterval(() => { if (!document.hidden) healthTick(); }, 1000);
+    }
+
     function infoHtml() {
       const mint = getMint();
       if (info.mint !== mint) loadInfo();
@@ -2401,6 +2691,7 @@
       if (d.bu) return buyUnitAmt(d.bu);
       if (d.su) return st.sellUnit === 'sol' ? sellSol(d.su) : sell(d.su);
       if (d.su2) return sell(d.su2);
+      if (d.ha) return healthAct(d.ha);
       if (d.oc) return cancelOrder(d.oc);
       if (d.g) return useGroup(d.g);
       if (d.gd) return delGroup(d.gd);
@@ -2448,6 +2739,7 @@
         if (ui.panel === 'pos') { loadHeld(); loadDaily(); }
         if (ui.panel === 'info' || ui.panel === 'share') loadInfo(true);
         if (ui.panel === 'set') loadDaily();
+        if (ui.panel === 'health') pingRelay();
         return render();
       }
       switch (a) {
@@ -2530,6 +2822,7 @@
       else if (d.s === 'kbHints') st.kbHints = ch;
       else if (d.s === 'bar') { st.bar = ch; st.barHidden = false; }
       else if (d.s === 'barOneClick') st.barOneClick = ch;
+      else if (d.s === 'autoReopen') st.autoReopen = ch;
       else if (d.s === 'barOnAg') st.barOnAg = ch;
       else if (d.s === 'intelOn') { st.intel.on = ch; if (ch) loadIntel(getMint()); }
       else if (d.s === 'unhideOnSignal') { st.unhideOnSignal = ch; save(); }
@@ -2895,8 +3188,9 @@
       GM_addValueChangeListener('twAlerts', (_k, _o, v, remote) => { if (remote) for (const a of v || []) showAlert(a); render(); });
       setInterval(() => { if (!document.hidden && (loadAlerts().length || ui.panel === 'trig')) render(); }, 1000);
       try { startStream(); } catch (e) { console.warn('[AG widget] live stream', e); }
+      try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s

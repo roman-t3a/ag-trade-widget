@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hotkeys</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+kbd{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;min-width:20px;height:22px;padding:0 6px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:#24272E;border:1px solid #3A3F48;border-bottom-width:2px;border-radius:6px;color:#E6E8EC}
+</style>
+</helmet>
+<div style="width: 460px; height: 600px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #24272E">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg>
+    <span style="font-size: 14px; font-weight: 600">Hotkeys</span>
+    <div style="flex: 1"></div>
+    <div style="display: flex; background: #111316; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+      <button style="background: #2A2D34; border: 0; border-radius: 6px; padding: 2px 9px; font-weight: 600">On</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">Hover only</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">Off</button>
+    </div>
+  </div>
+
+  <div style="padding: 12px 14px; display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 10.5px; color: #8B919C">Buy and sell keys follow the button order, so 1 is the top-left tile. Ignored while you type in GMGN's search or chat.</div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{buy}}" as="b" hint-placeholder-count="4">
+        <div style="position: relative; border: 1px solid #4FAF7D; border-radius: 9px; height: 36px; display: flex; align-items: center; justify-content: center; color: #8FE6B4; font-weight: 600" class="n">{{b.v}}<kbd style="position: absolute; top: -8px; left: -6px; height: 18px; min-width: 18px; font-size: 10px">{{b.k}}</kbd></div>
+      </sc-for>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{sell}}" as="b" hint-placeholder-count="4">
+        <div style="position: relative; border: 1px solid #B9505F; border-radius: 9px; height: 36px; display: flex; align-items: center; justify-content: center; color: #F59AA6; font-weight: 600" class="n">{{b.v}}<kbd style="position: absolute; top: -8px; left: -6px; height: 18px; min-width: 18px; font-size: 10px">{{b.k}}</kbd></div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #24272E"></div>
+  <div style="padding: 12px 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px 18px">
+    <sc-for list="{{keys}}" as="r" hint-placeholder-count="12">
+      <div style="display: flex; align-items: center; gap: 8px"><span style="display: flex; gap: 3px"><kbd>{{r.k}}</kbd></span><span style="color: #C9CDD4">{{r.d}}</span></div>
+    </sc-for>
+  </div>
+  <div style="flex: 1"></div>
+  <div style="padding: 10px 14px; border-top: 1px solid #24272E; display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: #8B919C">
+    <span>LIVE buys over your confirm limit still ask first.</span><div style="flex: 1"></div><button style="background: none; border: 0; color: #B8F04A; text-decoration: underline">Customize keys</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":460,"height":600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      buy: [['1', '0.1'], ['2', '0.25'], ['3', '0.5'], ['4', '1']].map(([k, v]) => ({ k, v })),
+      sell: [['⇧1', '10%'], ['⇧2', '25%'], ['⇧3', '50%'], ['⇧4', '100%']].map(([k, v]) => ({ k, v })),
+      keys: [
+        { k: '1–8', d: 'Buy tile 1–8' }, { k: '⇧1–8', d: 'Sell tile 1–8' },
+        { k: 'X', d: 'Sell initials' }, { k: 'U', d: 'Buy unit ◎ / $ / %' },
+        { k: 'S', d: 'Split ↔ each' }, { k: 'G', d: 'Next wallet group' },
+        { k: 'F1–F3', d: 'Preset P1–P3' }, { k: 'D', d: 'Arm dip buy' },
+        { k: 'L', d: 'PAPER ↔ LIVE' }, { k: 'C', d: 'Collapse widget' },
+        { k: '/', d: 'Custom amount' }, { k: 'Esc', d: 'Close panels' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

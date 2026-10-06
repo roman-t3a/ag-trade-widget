@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AG widget – wallet picker</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 400px; height: 900px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="background: #1F2228; border-bottom: 1px solid #2C3038; padding: 8px 12px; text-align: center; color: #C9CDD4; font-size: 11.5px">Split JEVABLE between the 5 selected wallets with 15% variance</div>
+
+  <div style="display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #24272E">
+    <button aria-label="Consolidate token into one wallet" style="background: #1F2228; border: 1px solid #2C3038; border-radius: 8px; padding: 5px 7px; display: flex; color: #C9CDD4"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="5" r="2"></circle><circle cx="18" cy="5" r="2"></circle><circle cx="12" cy="19" r="2"></circle><path d="M6 7c0 5 6 5 6 10M18 7c0 5-6 5-6 10"></path></svg></button>
+    <button aria-label="Split token across wallets" style="background: #2A2D34; border: 1px solid #B8F04A; border-radius: 8px; padding: 5px 7px; display: flex; color: #B8F04A"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"></circle><circle cx="5" cy="19" r="2"></circle><circle cx="12" cy="19" r="2"></circle><circle cx="19" cy="19" r="2"></circle><path d="M12 7v10M12 9c0 4-7 4-7 8M12 9c0 4 7 4 7 8"></path></svg></button>
+    <button aria-label="Even out SOL" style="background: #1F2228; border: 1px solid #2C3038; border-radius: 8px; padding: 5px 7px; display: flex; color: #C9CDD4"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M5 7h14M5 7l-3 7h6zM19 7l-3 7h6z"></path></svg></button>
+    <div style="flex: 1"></div>
+    <button style="background: #1F2228; border: 1px solid #2C3038; border-radius: 8px; padding: 4px 8px">Unselect all</button>
+    <button style="background: none; border: 1px solid #2C3038; border-radius: 8px; padding: 4px 8px; color: #8B919C">w/SOL</button>
+    <button style="background: #1F2228; border: 1px solid #4E6420; border-radius: 8px; padding: 4px 8px; color: #B8F04A">w/JEVABLE</button>
+  </div>
+
+  <div style="display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid #24272E; align-items: center">
+    <span style="font-size: 10.5px; color: #8B919C">Groups</span>
+    <button style="background: #B8F04A; border: 0; color: #15180F; border-radius: 999px; padding: 2px 9px; font-weight: 700">Snipers</button>
+    <button style="background: none; border: 1px solid #2C3038; border-radius: 999px; padding: 2px 9px; color: #C9CDD4">Bags</button>
+    <button style="background: none; border: 1px solid #2C3038; border-radius: 999px; padding: 2px 9px; color: #C9CDD4">All</button>
+    <div style="flex: 1"></div>
+    <button style="background: none; border: 1px dashed #3A3F48; border-radius: 999px; padding: 2px 9px; color: #8B919C">Save selection</button>
+  </div>
+
+  <div style="display: flex; padding: 6px 12px; font-size: 10.5px; color: #6E7480"><span style="width: 40px"></span><span>Wallet</span><div style="flex: 1"></div><span style="width: 80px; text-align: right">SOL</span><span style="width: 76px; text-align: right">JEVABLE</span><span style="width: 30px"></span></div>
+
+  <div style="display: flex; flex-direction: column">
+    <sc-for list="{{rows}}" as="w" hint-placeholder-count="8">
+      <label style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid #1F2228">
+        <div style="width: 30px; height: 30px; border-radius: 30px; background: #24272E; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #C9CDD4">{{w.ini}}</div>
+        <div style="display: flex; flex-direction: column; gap: 1px; min-width: 0">
+          <span style="font-weight: 600">{{w.name}}</span>
+          <span class="n" style="font-size: 10.5px; color: #8B919C">{{w.addr}}</span>
+        </div>
+        <div style="flex: 1"></div>
+        <span class="n" style="width: 80px; text-align: right">{{w.sol}}</span>
+        <span class="n" style="width: 76px; text-align: right; color: {{w.tokColor}}">{{w.tok}}</span>
+        <input type="checkbox" checked="{{w.on}}" aria-label="Select {{w.name}}" style="width: 18px; height: 18px">
+      </label>
+    </sc-for>
+  </div>
+
+  <div style="flex: 1"></div>
+  <div style="border-top: 1px solid #2C3038; background: #1C1F25; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center"><span style="font-weight: 600">Split JEVABLE · 9.81M</span><div style="flex: 1"></div><span class="n" style="color: #8B919C">variance ±15%</span></div>
+    <div class="n" style="display: flex; color: #C9CDD4; font-size: 11px"><span>Main keeps 2.08M</span><div style="flex: 1"></div><span>→ 4 wallets · 1.68M–2.21M each</span></div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 38px; border-radius: 9px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Copy plan</button>
+      <button style="height: 38px; border-radius: 9px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Reroll</button>
+      <button style="height: 38px; border-radius: 9px; border: 0; background: #B8F04A; color: #15180F; font-weight: 700">Run 4 transfers</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const r = (ini, name, addr, sol, tok, on) => ({ ini, name, addr, sol, tok, on, tokColor: tok === '0' ? '#6E7480' : '#8FE6B4' });
+    return { rows: [
+      r('MA', 'Main', '6qmW…VJkH', '2.802 ◎', '9.81M', true),
+      r('S2', 'Sniper 2', '5S7g…vKRg', '1.028 ◎', '0', true),
+      r('S3', 'Sniper 3', 'Ezo2…1L1z', '0.391 ◎', '0', true),
+      r('S4', 'Sniper 4', '9Syu…b137', '0.172 ◎', '0', true),
+      r('S5', 'Sniper 5', '9HpN…LZWd', '0.160 ◎', '0', true),
+      r('B1', 'Bag 1', 'F8pB…tpu9', '0.640 ◎', '0', false),
+      r('B2', 'Bag 2', 'CF4N…JbN9', '0.094 ◎', '0', false),
+      r('B3', 'Bag 3', 'CNch…6obf', '0.002 ◎', '0', false),
+    ] };
+  }
+}
+</script>
+</body>
+</html>

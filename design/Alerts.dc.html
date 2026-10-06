@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alerts and notifications</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 420px; height: 640px; box-sizing: border-box; background: #0C0D10; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; gap: 10px">
+
+  <div style="background: #2A1418; border: 1px solid #B9505F; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 9px; box-shadow: 0 12px 34px #000b">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 10px; font-weight: 700; letter-spacing: .08em; background: #B9505F; color: #FFF0F2; border-radius: 5px; padding: 2px 7px">DEV SELL</span>
+      <b>DABCAT</b><span class="n" style="color: #F59AA6">−4.2% of supply</span>
+      <div style="flex: 1"></div><span class="n" style="font-size: 10.5px; color: #C99AA2">12s ago</span>
+    </div>
+    <div class="n" style="font-size: 11px; color: #E9C2C8">Creator 8hQp…2xVd sold 42.0M for 8.9 ◎ · mcap $19.5K → $15.8K</div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 34px; border-radius: 8px; border: 0; background: #B9505F; color: #FFF0F2; font-weight: 700">Sell 100%</button>
+      <button style="height: 34px; border-radius: 8px; border: 1px solid #8A6A1E; background: none; color: #F2B84B; font-weight: 600">Sell init</button>
+      <button style="height: 34px; border-radius: 8px; border: 1px solid #5C2A33; background: none; color: #E9C2C8">Dismiss</button>
+    </div>
+  </div>
+
+  <div style="background: #1C1F25; border: 1px solid #5A4A1C; border-radius: 12px; padding: 10px 12px; display: flex; align-items: center; gap: 8px">
+    <span style="font-size: 10px; font-weight: 700; letter-spacing: .08em; background: #2A2412; color: #FFE08A; border: 1px solid #5A4A1C; border-radius: 5px; padding: 1px 6px">WHALE</span>
+    <span><b>PUMPKART</b> · 9xQr…Fv1 sold <span class="n">18.4 ◎</span></span>
+    <div style="flex: 1"></div><span class="n" style="font-size: 10.5px; color: #8B919C">top-10 holder</span>
+  </div>
+
+  <sc-for list="{{toasts}}" as="t" hint-placeholder-count="3">
+    <div style="background: #17191E; border: 1px solid #2C3038; border-radius: 12px; padding: 10px 12px; display: flex; align-items: center; gap: 10px">
+      <span style="width: 26px; height: 26px; border-radius: 26px; display: flex; align-items: center; justify-content: center; background: {{t.bg}}; color: {{t.fg}}; font-weight: 700">{{t.icon}}</span>
+      <div style="display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0">
+        <span style="font-weight: 600">{{t.title}}</span>
+        <span class="n" style="font-size: 10.5px; color: #8B919C">{{t.sub}}</span>
+      </div>
+      <span class="n" style="font-weight: 600; color: {{t.fg}}">{{t.amt}}</span>
+    </div>
+  </sc-for>
+
+  <div style="background: #17191E; border: 1px solid #2C3038; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 9px; margin-top: 4px">
+    <div style="display: flex; align-items: center"><span style="font-weight: 600">Alert rules</span><div style="flex: 1"></div><span style="font-size: 10.5px; color: #8B919C">coins you hold</span></div>
+    <sc-for list="{{rules}}" as="r" hint-placeholder-count="4">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <input type="checkbox" checked="{{r.on}}" aria-label="{{r.name}}">
+        <span>{{r.name}}</span><span class="n" style="color: #8B919C">{{r.th}}</span>
+        <div style="flex: 1"></div>
+        <span style="font-size: 10.5px; border-radius: 999px; padding: 1px 8px; background: {{r.aBg}}; color: {{r.aFg}}">{{r.act}}</span>
+      </div>
+    </sc-for>
+    <div style="display: flex; gap: 14px; font-size: 11px; color: #C9CDD4; padding-top: 2px">
+      <label style="display: flex; align-items: center; gap: 5px"><input type="checkbox" checked>Sound</label>
+      <label style="display: flex; align-items: center; gap: 5px"><input type="checkbox" checked>Desktop notifications</label>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":420,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const g = { bg: '#163126', fg: '#8FE6B4' }, y = { bg: '#2A2412', fg: '#FFE08A' };
+    const alert = { aBg: '#24272E', aFg: '#C9CDD4' }, auto = { aBg: '#3A1717', aFg: '#FFC2C2' };
+    return {
+      toasts: [
+        Object.assign({ icon: '✓', title: 'Bought DABCAT · 3/3 filled', sub: '0.5 ◎ ÷3 · avg mcap $19.6K', amt: '0.50 ◎' }, g),
+        Object.assign({ icon: '↑', title: 'TP1 hit · PUMPKART', sub: 'sold 50% on 3 wallets · server exit', amt: '+0.92 ◎' }, g),
+        Object.assign({ icon: '!', title: 'Protect armed · NPAD', sub: 'peak +74% · sells if back to +15%', amt: '+31%' }, y),
+      ],
+      rules: [
+        Object.assign({ on: true, name: 'Dev sells', th: '≥ 1% supply', act: 'auto-sell 100%' }, auto),
+        Object.assign({ on: true, name: 'Whale / top-10 sells', th: '≥ 5 ◎', act: 'alert' }, alert),
+        Object.assign({ on: true, name: 'Fills & exits', th: 'all', act: 'toast' }, alert),
+        Object.assign({ on: false, name: 'Mcap moves', th: '±30% in 1m', act: 'alert' }, alert),
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trade log and AG Intel</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 400px; height: 820px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #24272E">
+    <span style="font-size: 14px; font-weight: 700">PUMPKART</span><span class="n" style="color: #8B919C; font-size: 10.5px">FRDS…1LBn</span>
+    <div style="flex: 1"></div>
+    <span style="width: 7px; height: 7px; border-radius: 7px; background: #3DDC97"></span><span class="n">$76.6K</span>
+  </div>
+
+  <div style="margin: 12px 14px 0; border: 1px solid #4E6420; background: #1A2012; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 10px; font-weight: 700; letter-spacing: .08em; color: #15180F; background: #B8F04A; border-radius: 5px; padding: 2px 7px">AG INTEL</span>
+      <span style="font-weight: 600">Matches 3 of your filters</span>
+      <div style="flex: 1"></div>
+      <span class="n" style="font-size: 16px; font-weight: 700; color: #B8F04A">78</span><span style="font-size: 10px; color: #A9C38A">/100</span>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 5px">
+      <sc-for list="{{chips}}" as="c" hint-placeholder-count="5">
+        <span style="font-size: 10.5px; border-radius: 999px; padding: 1px 8px; background: {{c.bg}}; color: {{c.fg}}; border: 1px solid {{c.ln}}">{{c.t}}</span>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; padding: 14px 14px 6px"><span style="font-weight: 600">Your trades</span><div style="flex: 1"></div>
+    <div style="display: flex; background: #111316; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+      <button style="background: #2A2D34; border: 0; border-radius: 6px; padding: 1px 8px; font-weight: 600">All wallets</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 1px 8px; color: #8B919C">Selected</button>
+    </div>
+  </div>
+  <div style="display: flex; padding: 0 14px 4px; font-size: 10px; color: #6E7480; letter-spacing: .06em"><span style="width: 46px">TIME</span><span style="width: 48px">SIDE</span><span style="flex: 1">WALLET</span><span style="width: 70px; text-align: right">MCAP</span><span style="width: 72px; text-align: right">◎</span></div>
+  <div style="display: flex; flex-direction: column">
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="7">
+      <div class="n" style="display: flex; align-items: center; padding: 6px 14px; border-top: 1px solid #1F2228; font-size: 11.5px">
+        <span style="width: 46px; color: #8B919C">{{r.t}}</span>
+        <span style="width: 48px; font-weight: 700; color: {{r.col}}">{{r.side}}</span>
+        <span style="flex: 1; color: #C9CDD4; font-family: 'IBM Plex Sans', sans-serif">{{r.w}}</span>
+        <span style="width: 70px; text-align: right">{{r.mc}}</span>
+        <span style="width: 72px; text-align: right; color: {{r.col}}">{{r.sol}}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="margin: 8px 14px 0; display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: #8B919C">
+    <label style="display: flex; align-items: center; gap: 5px; color: #C9CDD4"><input type="checkbox" checked>Show entry / exit lines on GMGN's chart</label>
+  </div>
+
+  <div style="flex: 1"></div>
+  <div style="margin: 0 14px 12px; background: #111316; border: 1px solid #24272E; border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px">
+    <div style="font-size: 10px; color: #6E7480; letter-spacing: .06em">CONNECTION</div>
+    <sc-for list="{{sync}}" as="s" hint-placeholder-count="4">
+      <div style="display: flex; align-items: center; gap: 7px; font-size: 11px">
+        <span style="width: 7px; height: 7px; border-radius: 7px; background: {{s.dot}}"></span><span>{{s.k}}</span><div style="flex: 1"></div><span class="n" style="color: #8B919C">{{s.v}}</span>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ok = { bg: '#163126', fg: '#8FE6B4', ln: '#24563C' }, mid = { bg: '#2A2412', fg: '#FFE08A', ln: '#5A4A1C' };
+    const B = '#8FE6B4', S = '#F59AA6';
+    return {
+      chips: [Object.assign({ t: 'Fresh wallets 18%' }, ok), Object.assign({ t: 'Dev hold 2.1%' }, ok), Object.assign({ t: 'Bundled 6%' }, ok), Object.assign({ t: 'Top-10 31%' }, mid), Object.assign({ t: 'Smart money 4' }, ok)],
+      rows: [
+        { t: '14:02', side: 'BUY', col: B, w: 'Main', mc: '$38.9K', sol: '0.336' },
+        { t: '14:02', side: 'BUY', col: B, w: 'Sniper 2', mc: '$39.4K', sol: '0.322' },
+        { t: '14:02', side: 'BUY', col: B, w: 'Sniper 3', mc: '$39.8K', sol: '0.342' },
+        { t: '14:19', side: 'SELL', col: S, w: 'Main', mc: '$78.1K', sol: '0.337' },
+        { t: '14:19', side: 'SELL', col: S, w: 'Sniper 2', mc: '$78.4K', sol: '0.324' },
+        { t: '14:19', side: 'SELL', col: S, w: 'Sniper 3', mc: '$78.0K', sol: '0.336' },
+        { t: '14:31', side: 'BUY', col: B, w: 'Main', mc: '$70.2K', sol: '0.250' },
+      ],
+      sync: [
+        { k: 'Price stream', v: 'GMGN · live', dot: '#3DDC97' },
+        { k: 'AG feed', v: 'connected · 2 coins', dot: '#3DDC97' },
+        { k: 'Backtester relay', v: 'heartbeat 2s ago', dot: '#3DDC97' },
+        { k: 'AG positions', v: 'synced 3s ago', dot: '#F2B84B' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

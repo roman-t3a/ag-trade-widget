@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AG widget – Sell</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090D}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 360px; height: 760px; box-sizing: border-box; background: #0E1219; border: 1px solid #222A37; border-radius: 16px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E9EF; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #1C2330">
+    <div style="font-weight: 700; letter-spacing: .06em; color: #B8F04A">AG ⚡</div>
+    <button style="background: #5C1414; border: 1px solid #F05252; color: #FFE4E4; border-radius: 999px; padding: 2px 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em">● LIVE</button>
+    <div style="flex: 1"></div>
+    <button style="display: flex; align-items: center; gap: 6px; background: #161C27; border: 1px solid #2A3343; border-radius: 8px; padding: 4px 8px">
+      <span style="color: #B8F04A; font-size: 10px; font-weight: 700">AUTO</span><span>Holders</span><span class="n" style="color: #8A93A4">2</span>
+    </button>
+  </div>
+
+  <div style="padding: 12px 14px 10px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid #1C2330">
+    <div style="font-size: 15px; font-weight: 700">JEVABLE</div>
+    <div class="n" style="color: #8A93A4; font-size: 11px">pZgu…pump</div>
+    <div style="flex: 1"></div>
+    <div class="n" style="font-size: 14px; font-weight: 600">$9.12K</div>
+  </div>
+
+  <div style="padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1">
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background: #161C27; border: 1px solid #222A37; border-radius: 10px; padding: 3px">
+      <button style="background: none; border: 1px solid transparent; border-radius: 8px; padding: 6px 0; font-weight: 600; color: #8A93A4">Buy</button>
+      <button style="background: #3A1717; border: 1px solid #D9534F; border-radius: 8px; padding: 6px 0; font-weight: 700; color: #FFC2C2">Sell</button>
+    </div>
+
+    <div style="display: flex; align-items: baseline; gap: 6px">
+      <span style="color: #8A93A4">Holding</span>
+      <span class="n" style="font-size: 16px; font-weight: 600">0.552 ◎</span>
+      <span class="n" style="color: #8A93A4">$83</span>
+      <div style="flex: 1"></div>
+      <span class="n" style="color: #7FF0BF; font-weight: 600">+31.0%</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+      <button style="background: transparent; border: 1px solid #7A3434; border-radius: 10px; padding: 10px 0; color: #FFC2C2; font-weight: 600" class="n">10%</button>
+      <button style="background: transparent; border: 1px solid #7A3434; border-radius: 10px; padding: 10px 0; color: #FFC2C2; font-weight: 600" class="n">25%</button>
+      <button style="background: transparent; border: 1px solid #7A3434; border-radius: 10px; padding: 10px 0; color: #FFC2C2; font-weight: 600" class="n">50%</button>
+      <button style="background: #3A1717; border: 1px solid #F07070; border-radius: 10px; padding: 10px 0; color: #FFE4E4; font-weight: 700" class="n">100%</button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 40px; border-radius: 10px; border: 1px solid #C9A227; background: #2B2410; color: #FFE08A; font-weight: 700">Sell initials <span class="n" style="font-weight: 500; opacity: .8">· 76%</span></button>
+      <label style="display: flex; align-items: center; gap: 6px; background: #0A0D13; border: 1px solid #2A3343; border-radius: 10px; padding: 0 10px">
+        <input class="n" value="35" aria-label="Custom sell percent" style="flex: 1; min-width: 0; background: none; border: 0; color: #E6E9EF; font-size: 14px; outline: none">
+        <span class="n" style="color: #8A93A4">%</span>
+      </label>
+    </div>
+
+    <div style="background: #121721; border: 1px solid #1C2330; border-radius: 10px; overflow: hidden">
+      <div style="display: flex; padding: 7px 10px; font-size: 10.5px; color: #8A93A4; border-bottom: 1px solid #1C2330"><span>Per wallet</span><div style="flex: 1"></div><span>value · PnL</span></div>
+      <label style="display: flex; align-items: center; gap: 8px; padding: 7px 10px"><input type="checkbox" checked aria-label="Main"><span>Main</span><div style="flex: 1"></div><span class="n">0.214 ◎</span><span class="n" style="color: #7FF0BF; width: 54px; text-align: right">+32.1%</span></label>
+      <label style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px dashed #1C2330"><input type="checkbox" checked aria-label="Sniper 2"><span>Sniper 2</span><div style="flex: 1"></div><span class="n">0.198 ◎</span><span class="n" style="color: #7FF0BF; width: 54px; text-align: right">+29.4%</span></label>
+      <label style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px dashed #1C2330"><input type="checkbox" aria-label="Sniper 3"><span style="color: #8A93A4">Sniper 3</span><div style="flex: 1"></div><span class="n" style="color: #8A93A4">0.140 ◎</span><span class="n" style="color: #7FF0BF; width: 54px; text-align: right">+31.5%</span></label>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 6px; margin-top: 2px">
+      <span style="font-weight: 600">Auto exits</span>
+      <div style="flex: 1"></div>
+      <span style="font-size: 10.5px; color: #8A93A4">run in the backtester tab</span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="border: 1px solid #5A4A1C; background: transparent; color: #FFE08A; border-radius: 10px; padding: 7px 0; font-size: 11px; font-weight: 600">100% @ Mig</button>
+      <button style="border: 1px solid #5A4A1C; background: transparent; color: #FFE08A; border-radius: 10px; padding: 7px 0; font-size: 11px; font-weight: 600">Init @ Mig</button>
+      <button style="border: 1px solid #C9A227; background: #2B2410; color: #FFE08A; border-radius: 10px; padding: 7px 0; font-size: 11px; font-weight: 700">Protect 70→15</button>
+    </div>
+    <div style="background: #121721; border: 1px solid #1C2330; border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <div style="width: 6px; height: 6px; border-radius: 6px; background: #FBBF24"></div>
+        <span>Protect +70% → +15%</span><div style="flex: 1"></div><span class="n" style="color: #FFE08A">armed · pk +74%</span>
+        <button aria-label="Cancel order" style="background: none; border: 1px solid #5C1414; color: #FCA5A5; border-radius: 6px; padding: 0 6px">×</button>
+      </div>
+      <div style="height: 4px; background: #1C2330; border-radius: 4px; position: relative"><div style="width: 42%; height: 4px; background: #FBBF24; border-radius: 4px"></div></div>
+      <div style="display: flex; font-size: 10px; color: #8A93A4" class="n"><span>+15 sell</span><div style="flex: 1"></div><span>now +31</span><div style="flex: 1"></div><span>+70 arm</span></div>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #1C2330; padding: 10px 6px; text-align: center">
+    <div><div style="font-size: 10px; color: #8A93A4">Bought</div><div class="n" style="font-weight: 600">0.42</div></div>
+    <div><div style="font-size: 10px; color: #8A93A4">Sold</div><div class="n" style="font-weight: 600">0.00</div></div>
+    <div><div style="font-size: 10px; color: #8A93A4">Holding</div><div class="n" style="font-weight: 600">0.55</div></div>
+    <div><div style="font-size: 10px; color: #8A93A4">PnL</div><div class="n" style="font-weight: 600; color: #7FF0BF">+0.13 ◎</div></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

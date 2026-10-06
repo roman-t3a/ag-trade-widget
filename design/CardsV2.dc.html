@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMGN cards with AG insight</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 660px; height: 760px; box-sizing: border-box; background: #101114; border: 1px solid #1F2228; border-radius: 12px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; position: relative; overflow: hidden">
+  <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #1F2228">
+    <b style="font-size: 14px">Migrated</b><div style="flex: 1"></div>
+    <div style="display: flex; background: #17191E; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+      <button style="background: #2A2D34; border: 0; border-radius: 6px; padding: 2px 9px; font-weight: 600">All</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">AG matches</button>
+      <button style="background: none; border: 0; border-radius: 6px; padding: 2px 9px; color: #8B919C">Mine</button>
+    </div>
+  </div>
+
+  <sc-for list="{{cards}}" as="c" hint-placeholder-count="4">
+    <div style="position: relative; display: flex; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #1F2228; opacity: {{c.op}}; background: {{c.bg}}; box-shadow: {{c.edge}}">
+      <div style="width: 62px; height: 62px; border-radius: 10px; flex: none; background: {{c.img}}; border: 2px solid {{c.ring}}"></div>
+      <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px">
+        <div style="display: flex; align-items: baseline; gap: 8px">
+          <b style="font-size: 15px">{{c.sym}}</b><span style="color: #6E7480; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{c.name}}</span>
+          <div style="flex: 1"></div>
+          <span class="n" style="color: #8B919C; font-size: 11px">V <b style="color: #F2B84B">{{c.v}}</b></span><span class="n" style="color: #8B919C; font-size: 11px">MC <b style="color: #60A5FA">{{c.mc}}</b></span>
+        </div>
+        <div class="n" style="display: flex; gap: 12px; font-size: 11px; color: #8B919C"><span style="color: {{c.ageC}}">{{c.age}}</span><span>holders {{c.h}}</span><span>top-10 {{c.t10}}</span></div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center">
+          <sc-for list="{{c.chips}}" as="x" hint-placeholder-count="5">
+            <span class="n" style="font-size: 10.5px; border-radius: 6px; padding: 1px 6px; background: {{x.bg}}; color: {{x.fg}}; border: 1px solid {{x.ln}}">{{x.t}}</span>
+          </sc-for>
+        </div>
+        <sc-if value="{{c.alert}}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #FFC2C2; background: #2A1418; border: 1px solid #5C2A33; border-radius: 6px; padding: 2px 8px; width: fit-content"><b style="color: #F59AA6">DEV SELL</b> {{c.alertT}}</div>
+        </sc-if>
+      </div>
+      <div style="position: absolute; right: 16px; top: 10px; display: flex; gap: 4px">
+        <span class="n" style="font-size: 11px; font-weight: 700; border-radius: 6px; padding: 1px 7px; background: {{c.agBg}}; color: {{c.agFg}}; border: 1px solid {{c.agLn}}">{{c.ag}}</span>
+      </div>
+      <div style="position: absolute; right: 16px; bottom: 12px; display: flex; gap: 5px; align-items: center">
+        <sc-if value="{{c.mine}}" hint-placeholder-val="{{ false }}"><span class="n" style="font-size: 10.5px; font-weight: 600; background: #0B1A14; border: 1px solid #2E9C6E; color: #7FF0BF; border-radius: 6px; padding: 1px 6px">{{c.mineT}}</span></sc-if>
+        <button class="n" style="background: #5C1414; border: 1px solid #F05252; color: #FFE4E4; border-radius: 6px; padding: 1px 8px; font-size: 11px; font-weight: 700">⚡ 0.1</button>
+      </div>
+    </div>
+  </sc-for>
+
+  <div style="position: absolute; left: 330px; top: 92px; width: 300px; background: #1C1F25; border: 1px solid #4E6420; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 9px; box-shadow: 0 18px 44px #000c">
+    <div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 9.5px; font-weight: 700; letter-spacing: .08em; color: #15180F; background: #B8F04A; border-radius: 4px; padding: 1px 6px">AG 18</span><b>iPAID</b><span class="n" style="color: #8FE6B4">1.56× signal</span><div style="flex: 1"></div><span style="font-size: 10px; color: #8B919C">hover peek</span></div>
+    <div class="n" style="font-size: 11px; color: #C9D6B0">Migrated runners · Fresh & clean · SM follow</div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px">
+      <sc-for list="{{peek}}" as="p" hint-placeholder-count="6">
+        <div style="background: #17191E; border-radius: 7px; padding: 5px 7px"><div style="font-size: 9.5px; color: #8B919C">{{p.k}}</div><div class="n" style="font-weight: 600; font-size: 12px; color: {{p.c}}">{{p.v}}</div></div>
+      </sc-for>
+    </div>
+    <div style="display: flex; align-items: flex-end; gap: 3px; height: 26px">
+      <sc-for list="{{spark}}" as="s" hint-placeholder-count="12"><div style="flex: 1; height: {{s}}px; background: #4FAF7D; border-radius: 2px; opacity: .8"></div></sc-for>
+    </div>
+    <div class="n" style="font-size: 10px; color: #8B919C">smart-money buys, last 12 min</div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px">
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #4FAF7D; background: none; color: #8FE6B4; font-weight: 600">Buy 0.1</button>
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Dip −30%</button>
+      <button style="height: 30px; border-radius: 8px; border: 1px solid #2C3038; background: #24272E; color: #8B919C">Hide coin</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":660,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const g = { bg: '#163126', fg: '#8FE6B4', ln: '#24563C' }, y = { bg: '#2A2412', fg: '#FFE08A', ln: '#5A4A1C' }, r = { bg: '#2A1418', fg: '#F59AA6', ln: '#5C2A33' }, n = { bg: 'transparent', fg: '#8B919C', ln: '#2C3038' };
+    const chip = (t, s) => Object.assign({ t }, s);
+    const agOn = { agBg: '#B8F04A', agFg: '#15180F', agLn: '#B8F04A' }, agWarn = { agBg: '#2A1418', agFg: '#F59AA6', agLn: '#B9505F' }, agOff = { agBg: 'transparent', agFg: '#6E7480', agLn: '#2C3038' };
+    return {
+      cards: [
+        Object.assign({ sym: 'iPAID', name: 'Launch Coins with Apple Pay', v: '$386.5K', mc: '$66.2K', age: '8m', ageC: '#8FE6B4', h: '539', t10: '31%', op: 1, bg: '#13171A', edge: 'inset 3px 0 0 #B8F04A', img: '#2FBF85', ring: '#F2B84B', ag: 'AG 18 · 1.56×',
+          chips: [chip('Dev 0%', y), chip('Bndl 2.3%', g), chip('Fresh 18%', g), chip('SM 4↑ 1↓', g), chip('Insiders 6.8%', r)], alert: false, alertT: '', mine: true, mineT: '◎ 0.70 · +44%' }, agOn),
+        Object.assign({ sym: 'dabcat', name: 'dabcat', v: '$190.9K', mc: '$10.2K', age: '50m', ageC: '#F2B84B', h: '332', t10: '38%', op: 1, bg: 'transparent', edge: 'inset 3px 0 0 #B9505F', img: '#8B6B3E', ring: '#F2B84B', ag: 'AG 7 · 0.62×',
+          chips: [chip('Dev 4.2% ↓', r), chip('Bndl 9%', y), chip('Fresh 31%', r), chip('SM 0↑ 2↓', r)], alert: true, alertT: 'creator sold 4.2% of supply · 12s ago', mine: true, mineT: '◎ 0.40 · −20%' }, agWarn),
+        Object.assign({ sym: 'PLAGUE', name: 'plague coin', v: '$48.1K', mc: '$22.4K', age: '3m', ageC: '#8FE6B4', h: '118', t10: '44%', op: 0.55, bg: 'transparent', edge: 'none', img: '#3A3F48', ring: '#3A3F48', ag: 'AG ✗ 2 filters',
+          chips: [chip('Top-10 44% > 35%', n), chip('Fresh 46% > 25%', n)], alert: false, alertT: '', mine: false, mineT: '' }, agOff),
+      ],
+      peek: [{ k: 'Dev', v: '0.0%', c: '#FFE08A' }, { k: 'Bundled', v: '2.3%', c: '#8FE6B4' }, { k: 'Top-10', v: '31%', c: '#FFE08A' }, { k: 'Fresh', v: '18%', c: '#8FE6B4' }, { k: 'Insiders', v: '6.8%', c: '#F59AA6' }, { k: 'ATH', v: '2.10×', c: '#8FE6B4' }],
+      spark: [4, 6, 3, 8, 5, 9, 12, 7, 14, 10, 18, 22],
+    };
+  }
+}
+</script>
+</body>
+</html>

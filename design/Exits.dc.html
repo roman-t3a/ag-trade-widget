@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Adv. buy – exit strategy</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+input{font:inherit}
+</style>
+</helmet>
+<div style="width: 380px; height: 900px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #24272E">
+    <button style="background: #5C1414; border: 1px solid #F05252; color: #FFE4E4; border-radius: 999px; padding: 3px 10px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em">● LIVE</button>
+    <span style="font-weight: 700">DABCAT</span><span class="n" style="color: #8B919C; font-size: 10.5px">5EZ7…i4Lh</span>
+    <div style="flex: 1"></div>
+    <span style="width: 7px; height: 7px; border-radius: 7px; background: #3DDC97"></span><span class="n">$19.5K</span>
+  </div>
+
+  <div style="padding: 10px 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 14px; font-weight: 600">Buy</span>
+      <span style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8B919C">with
+        <button style="background: #B8F04A; border: 0; color: #15180F; border-radius: 999px; padding: 1px 9px; font-weight: 700">Snipers · 3</button></span>
+      <div style="flex: 1"></div>
+      <span class="n" style="color: #C9CDD4">◎ 4.22</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 6px; background: #1A1F17; border: 1px solid #34401F; border-radius: 8px; padding: 5px 8px; font-size: 10.5px; color: #C9D6B0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg>
+      Buys use your group. Sells auto-pick the 2 wallets holding DABCAT.
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{buy}}" as="b" hint-placeholder-count="8">
+        <button class="n" style="background: transparent; border: 1px solid #4FAF7D; border-radius: 9px; height: 36px; color: #8FE6B4; font-weight: 600; font-size: 13px">{{b}}</button>
+      </sc-for>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; color: #8B919C; font-size: 11px">
+      <span class="n">60%</span><span class="n">0.001</span><span>Jito</span><div style="flex: 1"></div>
+      <label style="display: flex; align-items: center; gap: 4px; color: #E6E8EC; font-weight: 600"><input type="checkbox" checked>Adv.</label>
+    </div>
+  </div>
+
+  <div style="margin: 0 12px; background: #1C1F25; border: 1px solid #2C3038; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 13px; font-weight: 600">Exit strategy</span>
+      <button style="display: flex; align-items: center; gap: 4px; background: #24272E; border: 1px solid #3A3F48; border-radius: 7px; padding: 2px 8px; font-size: 11px">Runner <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"></path></svg></button>
+      <div style="flex: 1"></div>
+      <span style="display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: #7FE0B0; background: #10261C; border: 1px solid #24563C; border-radius: 999px; padding: 1px 8px">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3" y="4" width="18" height="7" rx="2"></rect><rect x="3" y="13" width="18" height="7" rx="2"></rect></svg>AG server</span>
+    </div>
+    <div style="font-size: 10.5px; color: #8B919C">Attached to every buy. AG runs it, so it keeps working with Chrome closed.</div>
+
+    <div style="display: flex; padding: 0 2px; font-size: 10px; color: #6E7480; letter-spacing: .06em"><span style="width: 54px">LEVEL</span><span style="width: 92px">TRIGGER</span><span style="flex: 1">SELL</span><span style="width: 74px; text-align: right">≈ MCAP</span></div>
+    <sc-for list="{{levels}}" as="l" hint-placeholder-count="4">
+      <div style="display: flex; align-items: center; gap: 0; background: #17191E; border: 1px solid #2C3038; border-radius: 9px; padding: 6px 8px">
+        <span style="width: 46px; font-weight: 700; color: {{l.col}}">{{l.k}}</span>
+        <span class="n" style="width: 92px; background: #111316; border: 1px solid #2C3038; border-radius: 6px; padding: 3px 6px; color: {{l.col}}">{{l.trig}}</span>
+        <span class="n" style="flex: 1; margin-left: 8px; color: #E6E8EC">{{l.sell}}</span>
+        <span class="n" style="width: 74px; text-align: right; color: #8B919C">{{l.mc}}</span>
+      </div>
+    </sc-for>
+    <button style="border: 1px dashed #3A3F48; background: none; border-radius: 9px; padding: 7px 0; color: #8B919C">+ Add level</button>
+
+    <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px"><input type="checkbox" checked>Move stop-loss to break-even after TP1</label>
+    <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px"><input type="checkbox">Trailing stop <span class="n" style="color: #8B919C">−25% from peak</span></label>
+
+    <div style="height: 1px; background: #2C3038"></div>
+    <div style="display: flex; align-items: center; gap: 8px; font-size: 11.5px">
+      <span style="display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: #FFE08A; background: #2A2412; border: 1px solid #5A4A1C; border-radius: 999px; padding: 1px 8px">browser</span>
+      <span>Sell initials @ migration</span><div style="flex: 1"></div><input type="checkbox" checked aria-label="Sell initials at migration">
+    </div>
+    <div style="font-size: 10.5px; color: #8B919C">Migration exits still need the backtester tab open: AG has no server-side rule for them.</div>
+  </div>
+
+  <div style="flex: 1"></div>
+  <div style="margin: 12px; display: flex; flex-direction: column; gap: 6px; background: #13261C; border: 1px solid #24563C; border-radius: 10px; padding: 10px">
+    <div style="display: flex; align-items: center; font-size: 11px; color: #7FBF9C"><span>If every TP fills on 1 ◎ (split 3) · % of the original bag</span><div style="flex: 1"></div><span class="n">entry $19.5K</span></div>
+    <div class="n" style="display: flex; align-items: baseline; gap: 8px; color: #8FE6B4"><span style="font-size: 18px; font-weight: 600">+◎ 3.50</span><span>· +350%</span><div style="flex: 1"></div><span style="font-size: 11px; color: #F59AA6">worst −◎ 0.35</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":380,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const tp = '#8FE6B4', sl = '#F59AA6';
+    return {
+      buy: ['0.1', '0.25', '0.5', '1', '2', '3', '5', '10'],
+      levels: [
+        { k: 'TP1', trig: '+100%', sell: '50% of bag', mc: '$39.0K', col: tp },
+        { k: 'TP2', trig: '+300%', sell: '25% of bag', mc: '$78.0K', col: tp },
+        { k: 'TP3', trig: '+900%', sell: '25% of bag', mc: '$195K', col: tp },
+        { k: 'SL', trig: '−35%', sell: '100% of bag', mc: '$12.7K', col: sl },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

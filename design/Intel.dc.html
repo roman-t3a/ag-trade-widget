@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AG Intel panel</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width: 400px; height: 1040px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid #24272E">
+    <span style="font-size: 10px; font-weight: 700; letter-spacing: .08em; color: #15180F; background: #B8F04A; border-radius: 5px; padding: 2px 7px">AG INTEL</span>
+    <b style="font-size: 13.5px">iPAID</b><span class="n" style="color: #8B919C; font-size: 10.5px">CNn1…pump</span>
+    <div style="flex: 1"></div>
+    <button aria-label="Pin panel" style="background: none; border: 0; color: #8B919C; padding: 3px; display: flex"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5M5 17h14l-2-4V5H7v8z"></path></svg></button>
+    <button aria-label="Collapse panel" style="background: none; border: 0; color: #8B919C; padding: 3px; display: flex"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"></path></svg></button>
+  </div>
+
+  <div style="padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow: hidden">
+
+    <div style="background: #1A2012; border: 1px solid #4E6420; border-radius: 12px; padding: 12px; display: flex; gap: 12px; align-items: center">
+      <div style="position: relative; width: 64px; height: 64px; flex: none">
+        <svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="27" fill="none" stroke="#2C3A18" stroke-width="7"></circle><circle cx="32" cy="32" r="27" fill="none" stroke="#B8F04A" stroke-width="7" stroke-linecap="round" stroke-dasharray="122 170" transform="rotate(-90 32 32)"></circle></svg>
+        <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center"><span style="font-size: 8.5px; color: #A9C38A; letter-spacing: .06em">AG</span><b class="n" style="font-size: 20px; color: #B8F04A; line-height: 1">18</b></div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+        <span style="font-weight: 700; font-size: 13px">Matched 3 of your presets</span>
+        <span class="n" style="font-size: 11px; color: #C9D6B0">signal $42.4K · 6m ago → <b style="color: #8FE6B4">$66.2K · 1.56×</b></span>
+        <span class="n" style="font-size: 10.5px; color: #8B919C">ATH since signal 2.10× ($88.9K) · win pred 41%</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center"><span style="font-size: 10px; color: #6E7480; letter-spacing: .08em">RISK · AT SIGNAL → NOW</span><div style="flex: 1"></div><span style="font-size: 10.5px; color: #8B919C">live</span></div>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+        <sc-for list="{{risk}}" as="r" hint-placeholder-count="6">
+          <div style="background: #1C1F25; border: 1px solid {{r.ln}}; border-radius: 9px; padding: 7px 8px; display: flex; flex-direction: column; gap: 2px">
+            <span style="font-size: 10px; color: #8B919C">{{r.k}}</span>
+            <span class="n" style="font-size: 12.5px; font-weight: 600; color: {{r.c}}">{{r.v}}</span>
+            <span class="n" style="font-size: 9.5px; color: #8B919C">{{r.s}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="background: #1C1F25; border: 1px solid #2C3038; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; align-items: center"><span style="font-weight: 600">Flow · last 5 min</span><div style="flex: 1"></div><span class="n" style="color: #8FE6B4">net +◎ 6.2</span></div>
+      <div style="display: flex; align-items: flex-end; gap: 6px; height: 54px">
+        <sc-for list="{{flow}}" as="f" hint-placeholder-count="5">
+          <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; height: 54px">
+            <div style="height: {{f.b}}px; background: #4FAF7D; border-radius: 3px 3px 0 0"></div>
+            <div style="height: {{f.s}}px; background: #B9505F; border-radius: 0 0 3px 3px"></div>
+          </div>
+        </sc-for>
+      </div>
+      <div class="n" style="display: flex; justify-content: space-between; font-size: 9.5px; color: #6E7480"><span>−5m</span><span>now</span></div>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+        <div><div style="font-size: 10px; color: #8B919C">Smart money</div><div class="n" style="font-weight: 600"><span style="color: #8FE6B4">4 buy</span> · <span style="color: #F59AA6">1 sell</span></div></div>
+        <div><div style="font-size: 10px; color: #8B919C">KOLs in</div><div class="n" style="font-weight: 600">3 <span style="color: #8B919C; font-weight: 400">· 2.1 ◎</span></div></div>
+        <div><div style="font-size: 10px; color: #8B919C">Fresh buyers</div><div class="n" style="font-weight: 600">12 <span style="color: #F2B84B; font-weight: 400">↑</span></div></div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px">
+      <div style="background: #1C1F25; border: 1px solid #2C3038; border-radius: 10px; padding: 9px 10px; display: flex; flex-direction: column; gap: 4px">
+        <div style="display: flex; align-items: baseline; gap: 6px"><span style="font-size: 10px; color: #8B919C">Holders</span><div style="flex: 1"></div><b class="n">539</b></div>
+        <svg width="160" height="34" viewBox="0 0 160 34"><path d="M0 30 L20 28 L40 26 L60 22 L80 20 L100 15 L120 12 L140 8 L160 5" fill="none" stroke="#8FE6B4" stroke-width="2"></path><path d="M0 30 L20 28 L40 26 L60 22 L80 20 L100 15 L120 12 L140 8 L160 5 V34 H0Z" fill="#8FE6B4" fill-opacity=".08"></path></svg>
+        <span class="n" style="font-size: 10px; color: #8FE6B4">+212 since signal</span>
+      </div>
+      <div style="background: #1C1F25; border: 1px solid #2C3038; border-radius: 10px; padding: 9px 10px; display: flex; flex-direction: column; gap: 4px">
+        <div style="display: flex; align-items: baseline; gap: 6px"><span style="font-size: 10px; color: #8B919C">Creator</span><div style="flex: 1"></div><span style="font-size: 10px; font-weight: 700; color: #15180F; background: #8FE6B4; border-radius: 4px; padding: 0 5px">TIER B</span></div>
+        <span class="n" style="font-size: 11px">6 launches · 1 migrated</span>
+        <span class="n" style="font-size: 11px">best 3.1× · <span style="color: #8FE6B4">0 rugs</span></span>
+        <span class="n" style="font-size: 10px; color: #8B919C">sold all at $51K (2m ago)</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center"><span style="font-size: 10px; color: #6E7480; letter-spacing: .08em">WHY IT MATCHED · MIGRATED RUNNERS</span><div style="flex: 1"></div><button style="background: none; border: 0; color: #B8F04A; font-size: 10.5px; padding: 0">2 more presets</button></div>
+      <div style="display: flex; flex-wrap: wrap; gap: 5px">
+        <sc-for list="{{why}}" as="w" hint-placeholder-count="7">
+          <span class="n" style="font-size: 10.5px; border-radius: 999px; padding: 2px 8px; background: {{w.bg}}; color: {{w.fg}}; border: 1px solid {{w.ln}}">{{w.t}}</span>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="background: #13261C; border: 1px solid #24563C; border-radius: 10px; padding: 9px 10px; display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 10px; color: #7FBF9C; letter-spacing: .06em">YOU</span>
+      <span class="n" style="color: #8FE6B4; font-weight: 600">+◎ 0.21 · +44%</span>
+      <span class="n" style="font-size: 10.5px; color: #7FBF9C">entry $46.0K</span>
+      <div style="flex: 1"></div>
+      <span style="font-size: 10px; color: #7FE0B0; border: 1px solid #24563C; border-radius: 999px; padding: 0 7px">Runner on AG</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 34px; border-radius: 9px; border: 1px solid #4FAF7D; background: none; color: #8FE6B4; font-weight: 600">Buy 0.5 ◎</button>
+      <button style="height: 34px; border-radius: 9px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Dip −30%</button>
+      <button style="height: 34px; border-radius: 9px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Open on AG</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":1040}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ok = { ln: '#24563C', c: '#8FE6B4' }, mid = { ln: '#5A4A1C', c: '#FFE08A' }, bad = { ln: '#5C2A33', c: '#F59AA6' };
+    const pass = { bg: '#163126', fg: '#8FE6B4', ln: '#24563C' }, warn = { bg: '#2A2412', fg: '#FFE08A', ln: '#5A4A1C' };
+    return {
+      risk: [
+        Object.assign({ k: 'Dev hold', v: '0.0%', s: '4.1% → 0 · sold' }, mid),
+        Object.assign({ k: 'Bundled', v: '2.3%', s: '6.0% → 2.3%' }, ok),
+        Object.assign({ k: 'Top-10', v: '31%', s: '28% → 31%' }, mid),
+        Object.assign({ k: 'Fresh wallets', v: '18%', s: '22% → 18%' }, ok),
+        Object.assign({ k: 'Snipers', v: '7 · 1.2%', s: 'holding' }, ok),
+        Object.assign({ k: 'Insiders', v: '2 · 6.8%', s: 'linked to dev' }, bad),
+      ],
+      flow: [[18, 6], [24, 10], [14, 12], [32, 8], [40, 6]].map(([b, s]) => ({ b, s })),
+      why: [
+        Object.assign({ t: '✓ Fresh ≤ 25%' }, pass), Object.assign({ t: '✓ Bundled ≤ 10%' }, pass), Object.assign({ t: '✓ Top-10 ≤ 35%' }, pass),
+        Object.assign({ t: '✓ Smart money ≥ 3' }, pass), Object.assign({ t: '✓ Vol ≥ $250K' }, pass), Object.assign({ t: '! Top-10 31% · limit 35%' }, warn),
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

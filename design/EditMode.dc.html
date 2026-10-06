@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AG widget – edit in place</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+input{font:inherit}
+</style>
+</helmet>
+<div style="width: 380px; height: 640px; box-sizing: border-box; background: #17191E; border: 1px solid #2C3038; border-radius: 14px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; overflow: hidden">
+
+  <div style="display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #24272E; background: #1C2A12">
+    <span style="font-weight: 700; color: #B8F04A">Editing P1</span>
+    <span style="font-size: 10.5px; color: #A9C38A">click any value to change it</span>
+    <div style="flex: 1"></div>
+    <button style="background: none; border: 1px solid #3A3F48; border-radius: 8px; padding: 3px 9px; color: #C9CDD4">Reset</button>
+    <button aria-label="Save presets" style="display: flex; align-items: center; gap: 4px; background: #B8F04A; border: 0; border-radius: 8px; padding: 4px 10px; color: #15180F; font-weight: 700"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-10"></path></svg>Save</button>
+  </div>
+
+  <div style="padding: 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="font-size: 14px; font-weight: 600">Buy</span>
+      <div style="display: flex; background: #111316; border: 1px solid #24272E; border-radius: 8px; padding: 2px">
+        <button style="background: none; border: 0; border-radius: 6px; padding: 2px 8px; color: #8B919C">◎</button>
+        <button style="background: none; border: 0; border-radius: 6px; padding: 2px 8px; color: #8B919C">$</button>
+        <button style="background: #2A2D34; border: 0; border-radius: 6px; padding: 2px 8px; font-weight: 600">%</button>
+      </div>
+      <span style="font-size: 10.5px; color: #8B919C">each unit keeps its own 8 values</span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{buy}}" as="b" hint-placeholder-count="8">
+        <input class="n" value="{{b.v}}" aria-label="Buy preset {{b.i}}" style="{{b.style}}">
+      </sc-for>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Slippage %<input class="n" value="60" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Priority ◎<input class="n" value="0.001" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">MEV<span style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC">Jito ▾</span></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Jitter %<input class="n" value="8" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #24272E; margin: 0 12px"></div>
+
+  <div style="padding: 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 14px; font-weight: 600">Sell</span><span style="color: #8B919C">%</span></div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{sell}}" as="s" hint-placeholder-count="8">
+        <input class="n" value="{{s.v}}" aria-label="Sell preset {{s.i}}" style="{{s.style}}">
+      </sc-for>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px">
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Slippage %<input class="n" value="60" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Priority ◎<input class="n" value="0.001" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+      <label style="display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8B919C">Protect arm → sell<input class="n" value="70 → 15" style="background: #111316; border: 1px solid #3A3F48; border-radius: 7px; padding: 5px 6px; color: #E6E8EC; min-width: 0"></label>
+    </div>
+  </div>
+  <div style="flex: 1"></div>
+  <div style="padding: 10px 12px; border-top: 1px solid #24272E; font-size: 10.5px; color: #8B919C">Tab moves to the next value · Enter saves · Esc cancels. Empty a slot to hide it.</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":380,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const b = 'background: #12241B; border: 1px dashed #4FAF7D; border-radius: 9px; height: 36px; color: #DFFBEA; font-weight: 600; font-size: 13px; text-align: center; min-width: 0';
+    const s = 'background: #2A1418; border: 1px dashed #B9505F; border-radius: 9px; height: 36px; color: #FFE0E5; font-weight: 600; font-size: 13px; text-align: center; min-width: 0';
+    const focus = 'background: #12241B; border: 2px solid #B8F04A; border-radius: 9px; height: 36px; color: #FFFFFF; font-weight: 600; font-size: 13px; text-align: center; min-width: 0';
+    return {
+      buy: ['0.2', '0.5', '1', '2', '0.01', '0.1', '0.05', '3'].map((v, i) => ({ v, i: i + 1, style: i === 2 ? focus : b })),
+      sell: ['25', '17', '33', '100', '5', '10', '15', '20'].map((v, i) => ({ v, i: i + 1, style: s })),
+    };
+  }
+}
+</script>
+</body>
+</html>

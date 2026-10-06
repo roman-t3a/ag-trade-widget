@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Safety rails</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0C0D10}
+a{color:#B8F04A}a:hover{color:#D4FF7A}
+.n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+input{font:inherit}
+</style>
+</helmet>
+<div style="width: 400px; height: 860px; box-sizing: border-box; background: #0C0D10; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; color: #E6E8EC; display: flex; flex-direction: column; gap: 16px">
+
+  <div style="background: #17191E; border: 1px solid #2C3038; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 12px">
+    <div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 14px; font-weight: 600">Safety rails</span><div style="flex: 1"></div><span style="font-size: 10.5px; color: #8B919C">⚙ Settings · LIVE only</span></div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center"><span>Max per coin</span><div style="flex: 1"></div><span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 3px 8px">2.0 ◎</span></div>
+      <div style="height: 6px; background: #2C3038; border-radius: 6px; overflow: hidden"><div style="height: 6px; width: 60%; background: #8FE6B4"></div></div>
+      <div class="n" style="display: flex; font-size: 10.5px; color: #8B919C"><span>DABCAT 1.20 ◎ in</span><div style="flex: 1"></div><span>0.80 ◎ left</span></div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center"><span>Daily loss limit</span><div style="flex: 1"></div><span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 3px 8px">3.0 ◎</span></div>
+      <div style="height: 6px; background: #2C3038; border-radius: 6px; overflow: hidden"><div style="height: 6px; width: 72%; background: #F2B84B"></div></div>
+      <div class="n" style="display: flex; font-size: 10.5px; color: #8B919C"><span>today −2.16 ◎ realized</span><div style="flex: 1"></div><span style="color: #F2B84B">0.84 ◎ before buys lock</span></div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 8px"><span>Warn when price impact above</span><div style="flex: 1"></div><span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 3px 8px">10%</span></div>
+    <div style="display: flex; align-items: center; gap: 8px"><span>Confirm LIVE buys above</span><div style="flex: 1"></div><span class="n" style="background: #111316; border: 1px solid #2C3038; border-radius: 7px; padding: 3px 8px">2.0 ◎</span></div>
+    <label style="display: flex; align-items: center; gap: 8px"><input type="checkbox" checked>Block a 2nd buy on the same coin within <span class="n" style="color: #8B919C">3s</span></label>
+  </div>
+
+  <div style="background: #17191E; border: 1px solid #2C3038; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 8px"><span style="font-weight: 600">Buy tiles</span><div style="flex: 1"></div><span style="font-size: 10.5px; color: #8B919C">impact shown in % and $ mode</span></div>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px">
+      <sc-for list="{{tiles}}" as="t" hint-placeholder-count="4">
+        <button style="{{t.style}}"><div class="n" style="font-size: 13px; font-weight: 600">{{t.a}}</div><div class="n" style="font-size: 10px; color: {{t.ic}}; margin-top: 2px">{{t.i}}</div></button>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="background: #1C1F25; border: 1px solid #5C2A33; border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 18px 50px #000c">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span style="width: 28px; height: 28px; border-radius: 8px; background: #3A1A10; display: flex; align-items: center; justify-content: center; color: #F2B84B"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18h.01"></path></svg></span>
+      <div style="display: flex; flex-direction: column"><b style="font-size: 13px">Confirm LIVE buy</b><span style="font-size: 10.5px; color: #8B919C">DABCAT · 5% of supply · split 3</span></div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <div style="background: #17191E; border-radius: 8px; padding: 7px 8px"><div style="font-size: 10px; color: #8B919C">Cost</div><div class="n" style="font-weight: 600">7.32 ◎</div></div>
+      <div style="background: #3A1717; border-radius: 8px; padding: 7px 8px"><div style="font-size: 10px; color: #F59AA6">Price impact</div><div class="n" style="font-weight: 600; color: #FFC2C2">+23.6%</div></div>
+      <div style="background: #17191E; border-radius: 8px; padding: 7px 8px"><div style="font-size: 10px; color: #8B919C">Avg fill mcap</div><div class="n" style="font-weight: 600">$21.7K</div></div>
+    </div>
+    <div style="font-size: 11px; color: #F2B84B">Over your 2.0 ◎ per-coin cap: 1.20 already in. Only 0.80 ◎ can go through.</div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+      <button style="height: 38px; border-radius: 9px; border: 1px solid #2C3038; background: #24272E; font-weight: 600">Cancel</button>
+      <button style="height: 38px; border-radius: 9px; border: 1px solid #4FAF7D; background: none; color: #8FE6B4; font-weight: 600">Buy 0.80 ◎</button>
+      <button style="height: 38px; border-radius: 9px; border: 0; background: #B9505F; color: #FFE4E4; font-weight: 700">Override</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ok = 'background: transparent; border: 1px solid #4FAF7D; border-radius: 9px; padding: 6px 0; color: #8FE6B4; text-align: center';
+    const warn = 'background: #2A1418; border: 1px solid #B9505F; border-radius: 9px; padding: 6px 0; color: #F59AA6; text-align: center';
+    return { tiles: [
+      { a: '0.5%', i: '+2.0% imp', ic: '#8B919C', style: ok },
+      { a: '1%', i: '+4.1% imp', ic: '#8B919C', style: ok },
+      { a: '3%', i: '+13.3% imp', ic: '#F59AA6', style: warn },
+      { a: '5%', i: '+23.6% imp', ic: '#F59AA6', style: warn },
+    ] };
+  }
+}
+</script>
+</body>
+</html>
