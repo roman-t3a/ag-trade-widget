@@ -1,18 +1,18 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.6.0
+// @version      3.6.1
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN and Trojan.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
 // @match        https://*.gmgn.ai/*
 // @match        https://trojan.com/*
-// @match        https://*.trojan.com/*
 // @homepageURL  https://github.com/roman-t3a/ag-trade-widget
 // @supportURL   https://github.com/roman-t3a/ag-trade-widget/issues
 // @updateURL    https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
 // @downloadURL  https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
 // @run-at       document-idle
+// @noframes
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -312,6 +312,9 @@
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
+  // top window only: terminals embed same-origin iframes (Trojan's TradingView chart is /terminal?token=… too),
+  // and the script must never run twice on one page (@noframes, plus this guard for managers that ignore it)
+  try { if (window.top !== window.self) return; } catch (_) { return; }
   const { agBus, agPathAllowed } = Core;
   const VER = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.0.0';
   const RELAY_LEASE = 9000;   // the backtester tab that owns the relay renews every 3s; a standby tab takes over after 9s

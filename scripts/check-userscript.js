@@ -20,12 +20,12 @@ const hm = src.match(/^\/\/ ==UserScript==\n([\s\S]*?)\n\/\/ ==\/UserScript==\n/
 if (!hm) { console.error('✗ missing or malformed ==UserScript== header at the top of the file'); process.exit(1); }
 const meta = {};
 for (const line of hm[1].split('\n')) {
-  const m = line.match(/^\/\/ @(\S+)\s+(.*)$/);
+  const m = line.match(/^\/\/ @(\S+)(?:\s+(.*))?$/);
   if (!m) { fail(`header: unexpected line "${line}"`); continue; }
-  (meta[m[1]] = meta[m[1]] || []).push(m[2].trim());
+  (meta[m[1]] = meta[m[1]] || []).push((m[2] || '').trim());
 }
 const one = (k) => (meta[k] || [])[0];
-for (const k of ['name', 'namespace', 'version', 'description', 'match', 'grant', 'run-at', 'updateURL', 'downloadURL']) if (!meta[k]) fail(`header: @${k} is missing`);
+for (const k of ['name', 'namespace', 'version', 'description', 'match', 'grant', 'run-at', 'updateURL', 'downloadURL', 'noframes']) if (!meta[k]) fail(`header: @${k} is missing`);
 
 const ver = one('version');
 if (!/^\d+\.\d+\.\d+$/.test(ver || '')) fail(`header: @version "${ver}" is not semver`);

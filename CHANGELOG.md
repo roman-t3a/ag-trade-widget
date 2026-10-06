@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.6.1
+- Fix: on Trojan the widget showed up twice. Trojan's TradingView chart is a same-origin iframe whose URL is also
+  `/terminal?token=…`, so the script ran inside it too. The script now runs in the top window only (`@noframes` +
+  a runtime guard), on every site.
+- Trojan: `@match` is `trojan.com` only (no more `*.trojan.com`, which also matched its wallet / login iframes).
+
 ## 3.6.0
 - **Trojan** (`trojan.com`) support: the widget, holdings bar, positions and exits work on every Trojan page;
   on a token page (`/terminal?token=<mint>`) you can buy / sell, with live mcap from the tab title.
