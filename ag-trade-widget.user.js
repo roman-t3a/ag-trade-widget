@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.3.0
+// @version      3.4.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester and on GMGN.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -131,6 +131,8 @@
       barOnAg: false,
       cardIntel: true,   // AG risk pill + hover peek on GMGN cards
       hiddenCoins: [],
+      hiddenMeta: {},    // mint → { t: hidden at (ms), n: AG signals known at that time }
+      unhideOnSignal: true, // a hidden coin comes back when AG fires a new signal on it
       alerts: {},
       scale: 1,          // widget size (drag the corner grip; double-click resets)
       autoFit: true,     // shrink to fit the screen height when needed
@@ -142,6 +144,8 @@
     st.intel = Object.assign({ on: false, open: true }, st.intel || {});
     if (!st.v32) { st.v32 = 1; st.intel.on = false; } // 3.2: the side panel is opt-in now
     if (!Array.isArray(st.hiddenCoins)) st.hiddenCoins = [];
+    if (!st.hiddenMeta || typeof st.hiddenMeta !== 'object') st.hiddenMeta = {};
+    for (const m of st.hiddenCoins) if (!st.hiddenMeta[m]) st.hiddenMeta[m] = { t: Date.now(), n: null }; // hidden before 3.4: watch from now on
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
     { const A = st.alerts || {};
       st.alerts = { dev: Object.assign({ on: true, pct: 1, auto: false }, A.dev), whale: Object.assign({ on: true, sol: 5 }, A.whale), move: Object.assign({ on: false, pct: 30 }, A.move),
@@ -1601,6 +1605,59 @@
         <div class="g3 iact"><button class="btn ok" data-bu="${first || ''}" ${first ? '' : 'disabled'}>Buy ${first ? unitLab(first, st.buyUnit) : ''}</button><button class="btn" data-a="idip">Dip −30%</button><a class="btn" href="https://backtester.alphagardeners.xyz/#token/${mint}" target="_blank" rel="noopener">Open on AG</a></div></div></div>`;
     }
 
+
+    // ---------------------------------------------------------- hidden coins come back on a new AG signal
+    // Hiding is often done before AG's signal lands. While a hidden coin is still listed on the page we poll its
+    // AG signals (/api/swaps/by-token, = matches of your presets) every 20s; a signal newer than the hide → unhide.
+    const sigTime = (x) => { const v = num(x && (x.signalAt ?? x.createdAt ?? x.blockTime ?? x.time ?? x.timestamp ?? x.ts)); return v == null ? (typeof (x && x.createdAt) === 'string' ? Date.parse(x.createdAt) || null : null) : v < 1e12 ? v * 1000 : v; };
+    function hideCoin(mint) {
+      const c = intelCache[mint];
+      st.hiddenCoins = [...new Set((st.hiddenCoins || []).concat(mint))].slice(-300);
+      st.hiddenMeta[mint] = { t: Date.now(), n: c && Array.isArray(c.sigs) ? c.sigs.filter((x) => sigTime(x) == null).length : null };
+      for (const k of Object.keys(st.hiddenMeta)) if (!st.hiddenCoins.includes(k)) delete st.hiddenMeta[k];
+      save();
+      toast(st.unhideOnSignal ? 'Coin hidden · it comes back if AG signals it' : 'Coin hidden from GMGN lists · unhide in ⚙');
+    }
+    function unhideCoin(mint) {
+      st.hiddenCoins = (st.hiddenCoins || []).filter((m) => m !== mint); delete st.hiddenMeta[mint]; save();
+    }
+    const hidChk = {}; let hidBusy = 0;
+    function newSignal(mint, sigs, prof) {
+      const m = st.hiddenMeta[mint] || (st.hiddenMeta[mint] = { t: 0, n: null }); // hidden before 3.4: no timestamp
+      const after = (t) => t != null && m.t && t > m.t + 1000;
+      if (sigs.some((x) => after(sigTime(x)))) return true;
+      if (prof && after(sigTime({ signalAt: prof.signalAt }))) return true;
+      // signals without a timestamp: compare how many there are with the count known at hide time
+      const untimed = sigs.filter((x) => sigTime(x) == null).length;
+      if (m.n == null) { m.n = untimed; save(); return false; } // first look: what is there now counts as known
+      return untimed > m.n;
+    }
+    function watchHidden(mint) {
+      if (!st.unhideOnSignal || env === 'ag' || hidBusy >= 2) return;
+      if (Date.now() - (hidChk[mint] || 0) < 20000) return;
+      hidChk[mint] = Date.now(); hidBusy++;
+      (async () => {
+        try {
+          const [sg, p] = await call([{ method: 'GET', path: `/api/swaps/by-token/${mint}` }, { method: 'GET', path: `/api/tokens/${mint}/profile` }]);
+          const sigs = sg && sg.ok && sg.j && Array.isArray(sg.j.swaps) ? sg.j.swaps : null;
+          const prof = p && p.ok && p.j && p.j.found !== false ? p.j.profile || p.j : null;
+          if (!sigs || !(st.hiddenCoins || []).includes(mint)) return;
+          const c = intelCache[mint] || (intelCache[mint] = { hist: [] });
+          c.sigs = sigs; if (prof) c.prof = prof;
+          if (!newSignal(mint, sigs, prof)) return;
+          unhideCoin(mint);
+          ui.sigNew = Object.assign(ui.sigNew || {}, { [mint]: Date.now() });
+          const last = sigs.slice().sort((a, b) => (sigTime(b) || 0) - (sigTime(a) || 0))[0] || {};
+          const sym = (prof && prof.symbol) || mint.slice(0, 4) + '…';
+          const pre = last.presetName || last.preset || last.presetLabel || '';
+          toast(`AG signal on ${sym}${pre ? ' · ' + pre : ''} → back in your list`);
+          notify(`AG signal · ${sym}`, `${pre || 'New signal'} on a coin you had hidden: it is back in your GMGN list`, 'alert', mint);
+          if (DEBUG) console.log('[AG widget] unhidden on signal', mint, last);
+          scanCards();
+        } catch (_) {} finally { hidBusy--; }
+      })();
+    }
+
     // ---------------------------------------------------------- AG insight on GMGN cards (visible cards only, cached)
     const cardQ = new Set();
     let cardBusy = 0;
@@ -1681,13 +1738,14 @@
         if (!mint) continue;
         const hide = hidden.has(mint) && mint !== getMint();
         if ((row.style.display === 'none') !== hide) row.style.display = hide ? 'none' : '';
-        if (hide) continue;
+        if (hide) { watchHidden(mint); continue; }
         if (st.cardIntel) { const r = hostEl.getBoundingClientRect(); if (r.bottom > -200 && r.top < vh + 200) wantCardIntel(mint); }
-        const h = held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint);
-        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}`;
+        const h = held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint), sn = ui.sigNew && Date.now() - (ui.sigNew[mint] || 0) < 120000;
+        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}|${sn ? 1 : 0}`;
         let c = hostEl.querySelector(':scope > .agtw-c');
         if (hostEl.classList.contains('agtw-held') !== !!h) hostEl.classList.toggle('agtw-held', !!h);
         if (hostEl.classList.contains('agtw-dev') !== dev) hostEl.classList.toggle('agtw-dev', dev);
+        if (hostEl.classList.contains('agtw-sig') !== !!sn) hostEl.classList.toggle('agtw-sig', !!sn);
         if (c && c.dataset.k === key) continue;
         if (!c) {
           c = document.createElement('div'); c.className = 'agtw-c';
@@ -1697,7 +1755,7 @@
         c.dataset.k = key;
         const cost = h ? h.worth - h.pnl : 0, pct = h && cost > 0 ? (h.pnl / cost) * 100 : null;
         const nW = (st.wallets.live || []).length;
-        c.innerHTML = (dev ? '<span class="dv" title="The creator just sold (AG alert)">DEV SELL</span>' : '') + pill +
+        c.innerHTML = (sn ? '<span class="sg" title="You had hidden this coin; AG just signalled it">AG SIGNAL</span>' : '') + (dev ? '<span class="dv" title="The creator just sold (AG alert)">DEV SELL</span>' : '') + pill +
           (h ? `<span class="hp ${pct == null ? '' : pct >= 0 ? 'up' : 'dn'}" title="You hold this in ${h.n} ${st.mode} wallet${h.n > 1 ? 's' : ''}">◎ ${sol(h.worth)}${usd(h.worth) ? ' · ' + usd(h.worth) : ''}${pct == null ? '' : ` · ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}</span>` : '') +
           (st.qb > 0 ? `<button class="qb ${st.mode === 'live' ? 'live' : ''}" data-qb="${mint}" title="Quick buy ${st.qb} SOL ${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? 'split across ' : '× ') + nW + ' wallets ' : ''}(${st.mode.toUpperCase()})">⚡ ${st.qb}${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? ' ÷' : ' ×') + nW : ''}</button>` : '');
       }
@@ -1730,6 +1788,8 @@
         .agtw-c .dv{background:#7f1d1d;border:1px solid #ef4444;color:#fee2e2;border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em}
         .agtw-held{box-shadow:inset 3px 0 0 #a3e635}
         .agtw-dev{box-shadow:inset 3px 0 0 #ef4444}
+        .agtw-sig{box-shadow:inset 3px 0 0 #B8F04A;background:#B8F04A12!important}
+        .agtw-c .sg{background:#B8F04A;border:1px solid #B8F04A;color:#15180F;border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em}
         .agtw-peek{position:fixed;right:auto;bottom:auto;z-index:100003;width:280px;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:8px;background:#1C1F25;border:1px solid #4E6420;border-radius:12px;padding:10px;color:#E6E8EC;box-shadow:0 18px 44px #000c;display:none;font:500 11.5px/1.35 'IBM Plex Sans',Inter,system-ui,sans-serif}
         .agtw-peek .sh{display:flex;align-items:center;gap:6px}.agtw-peek .sp{flex:1}
         .agtw-peek .agt{font-size:9.5px;font-weight:700;letter-spacing:.08em;color:#15180F;background:#B8F04A;border-radius:4px;padding:1px 5px}
@@ -1749,7 +1809,7 @@
           const d = pb.dataset;
           if (d.pbuy) buy(st.qb, d.pbuy, (intelFacts(d.pbuy) || { p: {} }).p.symbol || '');
           if (d.popen) openCoin(d.popen);
-          if (d.phide) { st.hiddenCoins = [...new Set((st.hiddenCoins || []).concat(d.phide))].slice(-300); save(); toast('Coin hidden from GMGN lists · unhide in ⚙'); scanCards(); }
+          if (d.phide) { hideCoin(d.phide); scanCards(); }
           if (peekEl) peekEl.style.display = 'none';
           return;
         }
@@ -1773,6 +1833,7 @@
       let st8 = null;
       window.addEventListener('scroll', () => { clearTimeout(st8); st8 = setTimeout(scanCards, 250); }, true);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) { scanCards(); loadHeld(); } });
+      setInterval(() => { if ((st.hiddenCoins || []).length && st.unhideOnSignal) scanCards(); }, 10000); // hidden coins: signal check even on a quiet page
       loadHeld();
     }
 
@@ -2310,6 +2371,7 @@
         <div class="eg two">${ck('bar', 'Show holdings at the top', st.bar && !st.barHidden)}${ck('barOneClick', 'One-click ⚡ 100% (no confirm)', st.barOneClick)}${env === 'ag' ? ck('barOnAg', 'Also on the backtester', st.barOnAg) : ''}</div>
         <span class="sm2">AG Intel</span>
         <div class="eg two">${ck('intelOn', 'Intel panel on coin pages', st.intel.on)}${ck('cardIntel', 'AG risk pill + peek on cards', st.cardIntel)}
+          ${ck('unhideOnSignal', 'Unhide a hidden coin on a new AG signal', st.unhideOnSignal)}<span></span>
           <span class="mut sm">${(st.hiddenCoins || []).length} coin(s) hidden from lists</span>${(st.hiddenCoins || []).length ? '<button class="btn sm" data-a="unhide">Unhide all</button>' : '<span></span>'}</div>
         <button class="btn wide" data-a="pushtx">Apply P${st.preset + 1} tx settings to my ${st.mode} AG wallets</button>
         <div class="mut sm">AG stores slippage / fee / MEV per wallet, not per order, so this updates the wallets themselves (the AG bot uses them too).</div></div>`;
@@ -2394,7 +2456,7 @@
         case 'intelr': loadIntel(getMint(), true); return;
         case 'imore': ui.imore = !ui.imore; return render();
         case 'idip': { const mc = mcapNow(getMint()); ui.panel = 'trig'; ui.tf.tab = 'dip'; if (mc) ui.tf.target = kfmt(mc * 0.7); return render(); }
-        case 'unhide': st.hiddenCoins = []; save(); scanCards(); toast('All hidden coins are back'); return render();
+        case 'unhide': st.hiddenCoins = []; st.hiddenMeta = {}; save(); scanCards(); toast('All hidden coins are back'); return render();
         case 'mode': return toggleMode();
         case 'col': ui.collapsed = !ui.collapsed; savePos(); if (!ui.collapsed) loadPos(); return render();
         case 'edit': return startEdit();
@@ -2470,6 +2532,7 @@
       else if (d.s === 'barOneClick') st.barOneClick = ch;
       else if (d.s === 'barOnAg') st.barOnAg = ch;
       else if (d.s === 'intelOn') { st.intel.on = ch; if (ch) loadIntel(getMint()); }
+      else if (d.s === 'unhideOnSignal') { st.unhideOnSignal = ch; save(); }
       else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
       else if (d.s === 'confirmAbove') st.confirmAbove = v || 0;
@@ -2833,7 +2896,7 @@
       setInterval(() => { if (!document.hidden && (loadAlerts().length || ui.panel === 'trig')) render(); }, 1000);
       try { startStream(); } catch (e) { console.warn('[AG widget] live stream', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0 }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s
