@@ -54,7 +54,7 @@ function backend() {
   };
 }
 
-async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth, title = 'JEVABLE ↑ $6.97K | GMGN.AI' } = {}) {
+async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth, title = 'JEVABLE ↑ $6.97K | GMGN.AI', gm = {} } = {}) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1.5 });
   const be = backend();
   const errs = [];
@@ -74,10 +74,10 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
   });
   const url = pth || (env === 'ag' ? 'https://backtester.alphagardeners.xyz/#token/' + MINT : 'https://gmgn.ai/sol/token/' + MINT);
   await page.goto(url);
-  await page.evaluate(([tw, orders, env, ver]) => {
+  await page.evaluate(([tw, orders, env, ver, gm]) => {
     localStorage.setItem('agtwTest', '1');
     window.GM_info = { script: { version: ver } }; window.__VER = ver;
-    window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env !== 'ag' ? 0 : Date.now() };
+    window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env !== 'ag' ? 0 : Date.now(), ...gm };
     window.__gmL = {};
     window.GM_getValue = (k, d) => (k in __gm ? JSON.parse(JSON.stringify(__gm[k])) : d);
     window.GM_setValue = (k, v) => { const o = __gm[k]; __gm[k] = JSON.parse(JSON.stringify(v)); (__gmL[k] || []).forEach((f) => f(k, o, v, false)); };
@@ -89,7 +89,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
     window.__sockH = {}; window.__emits = [];
     window.io = () => ({ connected: true, on: (e, f) => { (__sockH[e] = __sockH[e] || []).push(f); if (e === 'connect') setTimeout(f, 30); }, emit: (...a) => __emits.push(a.join(' ')) });
     window.__sock = (e, d) => (__sockH[e] || []).forEach((f) => f(d));
-  }, [tw, orders, env, VER]);
+  }, [tw, orders, env, VER, gm]);
   await page.addScriptTag({ content: SCRIPT });
   await page.waitForTimeout(900);
   const api = {
@@ -458,6 +458,51 @@ async function main() {
       const nowM2 = await t.page.evaluate((m) => (document.querySelector('#agtw').innerText || '').includes(m.slice(0, 4)), MINT2);
       ok('Axiom: after navigating, the previous coin is not reused; the new one is picked up', stale && nowM2, `stale-cleared=${stale} new=${nowM2}`);
       ok('no page errors (Axiom token)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    // ---------------------------------------------------------------- 10c2 · backtester publishes the AG match list (Live Terminal cards)
+    {
+      const card = `<div role="button" class="shrink-0 rounded-lg cursor-pointer" id="ltc">JEV card</div><script>
+        document.getElementById('ltc').__reactFiber$t = { memoizedProps: { s: { tokenAddress: '${MINT}', symbol: 'JEV', signalMcap: 5000, winPredPercent: 61.6, criteria: { bundledPct: 30 } }, liveMcap: 10000, active: false }, return: null };
+      </script>`;
+      const t = await setup(browser, { body: card, tw: { wallets: { live: [W[0]] } } });
+      await t.wait(1200);
+      const pk = await t.page.evaluate(() => window.__gm.agMatches);
+      const m = pk && pk.m && pk.m['pZguZriDrxLRimkew1MrWcJCZMLDwDndsRFWNAJpump'];
+      ok('backtester: Live Terminal cards are published as AG matches (risk · win · ×)', m && m.s === 'JEV' && m.r === 8 && m.w === 62 && m.x === 2 && pk.cardsAt > 0 && pk.at > 0, JSON.stringify(m));
+      ok('no page errors (match publisher)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    // ---------------------------------------------------------------- 10d · AG filter on a terminal list (Axiom Pulse)
+    {
+      const M3 = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
+      const cards = [MINT, MINT2, M3].map((m, i) => `<div data-pulse-token-address="${m}" style="position:relative;height:116px;margin:10px 0 0 420px;width:491px;background:#16181c;border:1px solid #222;color:#ddd;padding:8px;box-sizing:border-box"><img alt="C${i}" width="1" height="1"> card ${i}<button aria-label="Hide token" onclick="(window.__nh=window.__nh||[]).push('${m}')">hide</button></div>`).join('');
+      const pack = (m, age = 0) => ({ at: Date.now() - age, cardsAt: Date.now() - age, m });
+      const JEV = { s: 'JEVABLE', r: 12, w: 60, x: 1.5, t: Date.now() };
+      const t = await setup(browser, { env: 'axiom', path: 'https://axiom.trade/pulse', title: 'Axiom SOL | Pulse', body: cards,
+        tw: { wallets: { live: [W[0]] }, filter: { mode: 'smart', native: true, after: 0 } }, gm: { agMatches: pack({ [MINT]: JEV }) } });
+      await t.wait(2500);
+      const vis = () => t.page.evaluate((ms) => ms.map((m) => { const c = document.querySelector(`[data-pulse-token-address="${m}"]`); return c.style.display === 'none' ? 'hidden' : c.classList.contains('agtw-dim') ? 'dim' : 'shown'; }), [MINT, MINT2, M3]);
+      const chip = await t.page.evaluate((m) => (document.querySelector(`[data-pulse-token-address="${m}"] .agtw-c .am`) || {}).innerText || '', MINT);
+      ok('AG filter: the match gets an AG badge (risk · × from signal)', /AG 12 · 1\.5×/.test(chip), chip);
+      let v = await vis();
+      ok('AG filter (smart): non-matching coins are hidden', v.join() === 'shown,hidden,hidden', v.join());
+      const nh = await t.page.evaluate(() => (window.__nh || []).slice().sort());
+      ok("AG filter: the terminal's own Hide token is clicked for unmatched coins (opt-in)", nh.length === 2 && !nh.includes(MINT), nh.join());
+      const fb = await t.page.evaluate(() => document.querySelector('#agtw .hf').innerText.replace(/\s+/g, ' '));
+      ok('AG filter: footbar shows matches · hidden', /1✓ 2⊘/.test(fb), fb);
+      await t.page.evaluate((p) => window.__fire('agMatches', p), pack({ [MINT]: JEV, [MINT2]: { ...JEV, s: 'DAB', r: 70 } }));
+      await t.wait(600);
+      v = await vis();
+      ok('AG filter (smart): a hidden coin comes back as soon as AG matches it', v.join() === 'shown,shown,hidden', v.join());
+      await t.page.evaluate(() => { window.__agtw.st.filter.mode = 'dim'; window.__agtw.scanCards(); });
+      v = await vis();
+      ok('AG filter (dim): unmatched coins are dimmed instead', v.join() === 'shown,shown,dim', v.join());
+      await t.page.evaluate((p) => window.__fire('agMatches', p), pack({ [MINT]: JEV }, 120000));
+      await t.wait(600);
+      v = await vis();
+      ok('AG filter: stale list (backtester gone) → nothing hidden, badges only', v.join() === 'shown,shown,shown', v.join());
+      ok('no page errors (AG filter)', !t.errs.length, t.errs.join(' | '));
       await t.page.close();
     }
     // ---------------------------------------------------------------- 11 · holdings bar at the top

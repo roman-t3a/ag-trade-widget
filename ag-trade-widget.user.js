@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.7.0
+// @version      3.8.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -142,6 +142,63 @@
       return eS ? eW / eS : null;
     }
 
+    // ---- AG filter: coins in your filtered AG Live Terminal ("matches"), published by the backtester tab and used
+    // by the terminal tabs to badge / hide / dim the other coins in their lists.
+    // Risk 0-100 (higher = riskier) from AG's metrics object (same schema in /profile.metrics and a terminal row's
+    // .criteria). extra: { ch: creator-holdings figures, rug: RugCheck summary } (AG Intel's panel uses both).
+    function riskScore(m, extra) {
+      const flags = [];
+      let s = 0;
+      const add = (pts, cond, msg) => { if (cond) { s += pts; flags.push([pts, msg]); } };
+      if (!m) return { score: null, flags };
+      const b = num(m.bundledPct), top = num(m.topHoldersPct), dr = num(m.drainedPct), liq = num(m.liquidityPct), cr = num(m.creatorHoldingPct), bv = num(m.buyVolumePct);
+      add(25, b > 60, `Bundled ${b}% (>60)`);
+      add(15, b > 40 && b <= 60, `Bundled ${b}% (>40)`);
+      add(8, b > 25 && b <= 40, `Bundled ${b}% (>25)`);
+      add(15, top > 50, `Top10 ${top != null ? top.toFixed(1) : ''}% (>50)`);
+      add(8, top > 35 && top <= 50, `Top10 ${top != null ? top.toFixed(1) : ''}% (>35)`);
+      add(10, dr > 0, `Drained ${dr}% (${m.drainedCount} wallets)`);
+      add(10, cr > 5, `Creator holds ${cr != null ? cr.toFixed(1) : ''}%`);
+      add(5, m.freshDeployer === true, 'Fresh deployer');
+      add(5, m.isMayhemMode === true, 'Mayhem mode');
+      add(6, liq != null && liq < 10, `Low liquidity ${liq != null ? liq.toFixed(1) : ''}%`);
+      add(5, bv != null && bv < 45, `Buy vol only ${bv != null ? bv.toFixed(1) : ''}%`);
+      const ch = extra && extra.ch, rug = extra && extra.rug;
+      if (ch) {
+        const coh = num(ch.cohortHoldingPct);
+        add(15, coh > 30, `Bundle cohort still holds ${coh}%`);
+        add(8, coh > 15 && coh <= 30, `Bundle cohort still holds ${coh}%`);
+      }
+      if (rug && Array.isArray(rug.risks)) {
+        let rp = 0;
+        for (const r of rug.risks) { const p = r.level === 'danger' ? 12 : r.level === 'warn' ? 4 : 0; if (p) { rp += p; flags.push([p, 'RugCheck: ' + r.name]); } }
+        s += Math.min(rp, 25);
+      }
+      return { score: Math.max(0, Math.min(100, Math.round(s))), flags };
+    }
+    // One match per Live Terminal row: s symbol · r risk · w win-pred % · x mcap / signal mcap · t last seen
+    const matchOf = (row, liveMcap, now) => {
+      const mc = num(liveMcap, row.currentMcap), sig = num(row.signalMcap);
+      return { s: row.symbol || row.token || '', r: riskScore(row.criteria).score, w: row.winPredPercent != null ? Math.round(row.winPredPercent) : null,
+        x: mc && sig ? +(mc / sig).toFixed(2) : null, t: now };
+    };
+    // merge rows into the store (in place); entries not seen for `ttl` ms expire
+    function mergeMatches(store, rows, now, ttl) {
+      for (const { row, liveMcap } of rows) if (row && row.tokenAddress) store[row.tokenAddress] = matchOf(row, liveMcap, now);
+      for (const [k, v] of Object.entries(store)) if (!v || now - v.t > ttl) delete store[k];
+      return store;
+    }
+    // the list is usable when a backtester tab answered in the last 90s AND its Live Terminal was on screen in the
+    // last 15 min (otherwise "not a match" means nothing: the filter falls back to badges only)
+    const matchesLive = (pack, now) => !!(pack && pack.at && now - pack.at < 90000 && now - (pack.cardsAt || 0) < 15 * 60000);
+    // smart = hide what AG doesn't match, reversibly (a coin is back the moment AG matches it) · dim · badge · off
+    const FILTER_MODES = ['smart', 'dim', 'badge', 'off'];
+    const filterAction = (mode, live, isMatch, isCurrent) =>
+      (isMatch || isCurrent || !live || mode === 'badge' || mode === 'off' || !FILTER_MODES.includes(mode) ? 'show' : mode === 'dim' ? 'dim' : 'hide');
+    // The terminal's own "Hide token" (stays hidden in your account there, we can't undo it): opt-in, smart mode only,
+    // live data only, and only for a coin still unmatched `after` minutes after we first saw it.
+    const nativeDue = (f, live, isMatch, seenAt, now) => !!(f && f.native && f.mode === 'smart' && live && !isMatch && seenAt && now - seenAt >= Math.max(0, Number(f.after) || 0) * 60000);
+
     // ---- AG intel
     const metric = (o, k) => { if (!o) return null; const v = o[k]; return v == null || v === '' ? null : typeof v === 'object' ? num(v.value, v.v, v.now) : num(v); };
     const metricsOf = (p) => (p && (p.metrics || p.currentMetrics)) || {};
@@ -271,6 +328,7 @@
     //   cardAttr       → attribute holding the coin (default href), cardMint(value) → mint
     //   cardRow        → selector a click inside a card climbs to; cardMinH skips smaller matches (ticker chips)
     //   tokenUrl(mint) → where "open coin" goes
+    //   nativeHide(card) → the terminal's own "Hide token" button inside a card (AG filter, opt-in), if it has one
     const B58 = '[1-9A-HJ-NP-Za-km-z]{32,44}';
     const GMGN_TOKEN = new RegExp(`/sol/token/(?:[A-Za-z0-9]+_)?(${B58})`);
     const TROJAN_TOKEN = new RegExp(`[?&]token=(${B58})(?:&|$)`);
@@ -289,6 +347,7 @@
         cardMinH: 0,
         cardMint: (href) => (String(href || '').match(GMGN_TOKEN) || [])[1] || null,
         tokenUrl: (m) => '/sol/token/' + m,
+        nativeHide: (card) => { const s = card.querySelector('svg.hide-token-icon'); return s ? s.parentElement : null; },
       },
       {
         id: 'trojan', name: 'Trojan', host: /(^|\.)trojan\.com$/,
@@ -328,6 +387,7 @@
         cardMinH: 0,
         cardMint: (v) => (ONLY_B58.test(String(v || '')) ? v : null),
         tokenUrl: (m) => '/meme/' + m, // Axiom redirects /meme/<mint> to the coin's pair page
+        nativeHide: (card) => card.querySelector('button[aria-label="Hide token"]'),
       },
     ];
     const siteFor = (hostname) => SITES.find((x) => x.host.test(String(hostname || ''))) || null;
@@ -336,7 +396,8 @@
 
     return { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, isPump, supplyCost, buyImpact, curvePct, pickUnit,
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
-      sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName };
+      sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName,
+      riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
@@ -465,11 +526,27 @@
     for (let i = 0; i < 4 && f; i++, f = f.return) { const p = f.memoizedProps; if (p && p.s && p.s.tokenAddress) return p; }
     return null;
   };
+  // ---- AG matches → terminal tabs: the coins of your filtered Live Terminal (shared Tampermonkey storage).
+  // Every backtester tab merges its own cards into the shared list; written when it changes, else every 15s (heartbeat).
+  const LT_CARDS = 'div[role="button"].shrink-0.rounded-lg.cursor-pointer';
+  const MATCH_TTL = 60 * 60000;
+  let matchSig = '', matchAt = 0;
+  function publishMatches(force) {
+    const now = Date.now(), rows = [];
+    for (const el of document.querySelectorAll(LT_CARDS)) { const p = cardRow(el); if (p) rows.push({ row: p.s, liveMcap: p.liveMcap }); }
+    const sig = rows.map((r) => r.row.tokenAddress + ':' + Math.round((num(r.liveMcap) || 0) / 1000)).join('|');
+    if (!force && sig === matchSig && now - matchAt < 15000) return;
+    matchSig = sig; matchAt = now;
+    const cur = GM_getValue('agMatches', null) || {};
+    const m = Core.mergeMatches(cur.m && typeof cur.m === 'object' ? cur.m : {}, rows, now, MATCH_TTL);
+    GM_setValue('agMatches', { at: now, cardsAt: rows.length ? now : cur.cardsAt || 0, m, v: VER });
+  }
+  const { num } = Core;
   let lastCardEl = null;
   function activeCard() {
     // fast path: the card that was active last time is usually still the active one
     if (lastCardEl && lastCardEl.isConnected) { const p = cardRow(lastCardEl); if (p && p.active) return p.s; }
-    for (const el of document.querySelectorAll('div[role="button"].shrink-0.rounded-lg.cursor-pointer')) {
+    for (const el of document.querySelectorAll(LT_CARDS)) {
       const p = cardRow(el);
       if (p && p.active) { lastCardEl = el; return p.s; }
     }
@@ -486,6 +563,8 @@
   const agSymbol = (m) => (lastRow && lastRow.tokenAddress === m && (lastRow.symbol || lastRow.token)) ||
     (document.title.match(/^\$?([A-Za-z0-9]{1,15})\s/) || [])[1] || '';
   tradeWidget('ag', agMint, agSymbol, agLocalCall, null);
+  { const pub = () => { try { publishMatches(); } catch (_) {} }; pub(); setInterval(() => { if (!document.hidden) pub(); }, 3000); document.addEventListener('visibilitychange', pub);
+    try { const wk2 = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),3000)'], { type: 'text/javascript' }))); wk2.onmessage = () => { if (document.hidden) pub(); }; } catch (_) {} }
 
 
   function tradeWidget(env, getMint, getSymbol, localCall, site) {
@@ -519,7 +598,8 @@
       w: 380,            // widget width at 100% size: ≥ 600 switches to the wide (2-column) layout
       barOneClick: false,
       barOnAg: false,
-      cardIntel: true,   // AG risk pill + hover peek on GMGN cards
+      cardIntel: true,   // AG risk pill + hover peek on terminal cards
+      filter: { mode: 'smart', native: false, after: 10 }, // AG filter on terminal lists (see Core.filterAction / nativeDue)
       hiddenCoins: [],
       hiddenMeta: {},    // mint → { t: hidden at (ms), n: AG signals known at that time }
       unhideOnSignal: true, // a hidden coin comes back when AG fires a new signal on it
@@ -538,6 +618,8 @@
     if (!st.hiddenMeta || typeof st.hiddenMeta !== 'object') st.hiddenMeta = {};
     for (const m of st.hiddenCoins) if (!st.hiddenMeta[m]) st.hiddenMeta[m] = { t: Date.now(), n: null }; // hidden before 3.4: watch from now on
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
+    st.filter = Object.assign({ mode: 'smart', native: false, after: 10 }, st.filter || {});
+    if (!Core.FILTER_MODES.includes(st.filter.mode)) st.filter.mode = 'smart';
     { const A = st.alerts || {};
       st.alerts = { dev: Object.assign({ on: true, pct: 1, auto: false }, A.dev), whale: Object.assign({ on: true, sol: 5 }, A.whale), move: Object.assign({ on: false, pct: 30 }, A.move),
         fills: A.fills !== false, sound: A.sound !== false, desktop: !!A.desktop }; }
@@ -1567,6 +1649,8 @@
     #agtw .bd{padding:0 12px}
     #agtw .tk{display:flex;align-items:center;gap:6px;padding:9px 0 0}
     #agtw .tk b{font-size:13.5px}
+    #agtw .agm{font-size:10px;font-weight:700;color:#15180F;background:var(--acc);border-radius:5px;padding:0 6px;white-space:nowrap}#agtw .agm.y{background:#fbbf24}#agtw .agm.r{background:#f87171}
+    #agtw .agn{font-size:10px;color:var(--sell);border:1px solid var(--sellB);border-radius:5px;padding:0 6px;white-space:nowrap}
     #agtw .cv{width:44px;height:4px;background:var(--ln);border-radius:4px;overflow:hidden}
     #agtw .cv i{display:block;height:4px;background:var(--acc)}
     #agtw .busy{color:var(--warn);font-size:10.5px}
@@ -2069,15 +2153,69 @@
       }
       for (const a of Object.values(m)) a.entry = a.eS ? a.eW / a.eS : null;
       heldAll = m; held = m;
-      if (env !== 'ag' && st.cards) scanCards();
+      if (env !== 'ag') scanCards();
       if (ui.panel === 'pos') render();
       renderBar();
     }
     const positioned = new WeakSet();
+    // ---- AG filter (terminal tabs): the match list published by the backtester tab
+    let agPack = env === 'ag' ? null : GM_getValue('agMatches', null) || {};
+    const agMatch = (m) => (agPack && agPack.m && agPack.m[m]) || null;
+    const agLive = () => Core.matchesLive(agPack, Date.now());
+    const firstSeen = new Map(), nativeDone = new Set(env === 'ag' ? [] : GM_getValue('twNativeHidden', []) || []), nativeQ = [];
+    let nativeBusy = false, nativeTimes = [];
+    if (env !== 'ag') GM_addValueChangeListener('agMatches', (_k, _o, v) => { agPack = v || {}; scanCards(); render(); });
+    const agCls = (r) => (r == null ? '' : r >= 60 ? 'r' : r > 33 ? 'y' : '');
+    const agChip = (mint, m) => `<button class="am ${agCls(m.r)}" data-agopen="${mint}" title="${escH(m.s)}: in your AG Live Terminal · risk ${m.r ?? '—'} · win ${m.w ?? '—'}% · ${m.x ?? '—'}× from signal · click: open on AG">AG ${m.r ?? ''}${m.x ? ' · ' + m.x + '×' : ''}</button>`;
+    function agTokChip(mint) {
+      if (env === 'ag' || st.filter.mode === 'off' || !agPack || !agPack.at) return '';
+      const m = agMatch(mint);
+      if (m) return `<span class="agm ${agCls(m.r)}" title="In your filtered AG Live Terminal · risk ${m.r ?? '—'} · win ${m.w ?? '—'}%">AG ✓${m.x ? ' ' + m.x + '×' : ''}</span>`;
+      return agLive() ? '<span class="agn" title="Not in your filtered AG Live Terminal">not in AG</span>' : '';
+    }
+    // hide a list row. Virtual lists (each row alone in an absolutely positioned wrapper) would break if the row left the
+    // layout, so there the wrapper is made invisible instead.
+    function setHidden(row, on) {
+      if ((row.dataset.agtwH === '1') === on) return;
+      if (on) {
+        const p = row.parentElement;
+        row.__agtwW = p && p.children.length <= 2 && getComputedStyle(p).position === 'absolute' ? p : null;
+        row.dataset.agtwH = '1';
+        if (row.__agtwW) row.__agtwW.style.visibility = 'hidden'; else row.style.display = 'none';
+      } else {
+        delete row.dataset.agtwH;
+        if (row.__agtwW) row.__agtwW.style.visibility = '';
+        row.style.display = '';
+      }
+    }
+    function queueNative(mint) {
+      if (nativeDone.has(mint) || nativeQ.includes(mint)) return;
+      nativeQ.push(mint); pumpNative();
+    }
+    async function pumpNative() { // the terminal's own Hide token, at most 30 a minute
+      if (nativeBusy) return;
+      nativeBusy = true;
+      try {
+        while (nativeQ.length) {
+          const now = Date.now();
+          nativeTimes = nativeTimes.filter((t) => now - t < 60000);
+          if (nativeTimes.length >= 30) { await sleep(5000); continue; }
+          const mint = nativeQ.shift();
+          if (!st.filter.native || st.filter.mode !== 'smart' || !agLive() || agMatch(mint) || mint === getMint()) continue;
+          const card = [...document.querySelectorAll(site.cards)].find((x) => site.cardMint(x.getAttribute(site.cardAttr || 'href')) === mint);
+          const btn = card && site.nativeHide && site.nativeHide(card);
+          if (!btn) continue;
+          btn.click();
+          nativeDone.add(mint); nativeTimes.push(now);
+          GM_setValue('twNativeHidden', [...nativeDone].slice(-3000));
+          await sleep(250);
+        }
+      } finally { nativeBusy = false; }
+    }
     function scanCards() {
       if (env === 'ag' || document.hidden) return;
-      if (!st.cards) { document.querySelectorAll('.agtw-c').forEach((e) => e.remove()); document.querySelectorAll('.agtw-held').forEach((e) => e.classList.remove('agtw-held')); return; }
-      const seen = new Set(), hidden = new Set(st.hiddenCoins || []), vh = window.innerHeight;
+      const seen = new Set(), hidden = new Set(st.hiddenCoins || []), vh = window.innerHeight, now = Date.now(), live = agLive(), F = st.filter;
+      let nM = 0, nH = 0;
       const devAl = new Set(loadAlerts().filter((a) => a.kind === 'dev' && !ui.alertsGone[a.id]).map((a) => a.mint));
       for (const el of document.querySelectorAll(site.cards)) {
         if (el.closest('#agtw')) continue;
@@ -2088,12 +2226,29 @@
         seen.add(hostEl);
         const mint = site.cardMint(el.getAttribute(site.cardAttr || 'href'));
         if (!mint) continue;
-        const hide = hidden.has(mint) && mint !== getMint();
-        if ((row.style.display === 'none') !== hide) row.style.display = hide ? 'none' : '';
-        if (hide) { watchHidden(mint); continue; }
+        const cur = mint === getMint(), m = agMatch(mint), manual = hidden.has(mint) && !cur;
+        if (!firstSeen.has(mint)) firstSeen.set(mint, now);
+        const act = Core.filterAction(F.mode, live, !!m, cur);
+        setHidden(row, manual || act === 'hide');
+        if (row.classList.contains('agtw-dim') !== (act === 'dim')) row.classList.toggle('agtw-dim', act === 'dim');
+        if (m) nM++; else if (act !== 'show') nH++;
+        if (site.nativeHide && Core.nativeDue(F, live, !!m, firstSeen.get(mint), now)) queueNative(mint);
+        if (manual) { watchHidden(mint); continue; }
+        if (act === 'hide') continue;
+        const ag = m && F.mode !== 'off' ? agChip(mint, m) : '';
+        if (!st.cards) { // overlay off: only the AG badge (if any)
+          const c0 = hostEl.querySelector(':scope > .agtw-c');
+          hostEl.classList.remove('agtw-held', 'agtw-dev', 'agtw-sig');
+          if (!ag) { if (c0) c0.remove(); continue; }
+          if (c0 && c0.dataset.k === ag) continue;
+          const c1 = c0 || hostEl.appendChild(Object.assign(document.createElement('div'), { className: 'agtw-c' }));
+          if (!positioned.has(hostEl)) { positioned.add(hostEl); if (getComputedStyle(hostEl).position === 'static') hostEl.style.position = 'relative'; }
+          c1.dataset.k = ag; c1.innerHTML = ag;
+          continue;
+        }
         if (st.cardIntel) { const r = hostEl.getBoundingClientRect(); if (r.bottom > -200 && r.top < vh + 200) wantCardIntel(mint); }
         const h = held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint), sn = ui.sigNew && Date.now() - (ui.sigNew[mint] || 0) < 120000;
-        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}|${sn ? 1 : 0}`;
+        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}|${sn ? 1 : 0}|${ag}`;
         let c = hostEl.querySelector(':scope > .agtw-c');
         if (hostEl.classList.contains('agtw-held') !== !!h) hostEl.classList.toggle('agtw-held', !!h);
         if (hostEl.classList.contains('agtw-dev') !== dev) hostEl.classList.toggle('agtw-dev', dev);
@@ -2107,10 +2262,13 @@
         c.dataset.k = key;
         const cost = h ? h.worth - h.pnl : 0, pct = h && cost > 0 ? (h.pnl / cost) * 100 : null;
         const nW = (st.wallets.live || []).length;
-        c.innerHTML = (sn ? '<span class="sg" title="You had hidden this coin; AG just signalled it">AG SIGNAL</span>' : '') + (dev ? '<span class="dv" title="The creator just sold (AG alert)">DEV SELL</span>' : '') + pill +
+        c.innerHTML = ag + (sn ? '<span class="sg" title="You had hidden this coin; AG just signalled it">AG SIGNAL</span>' : '') + (dev ? '<span class="dv" title="The creator just sold (AG alert)">DEV SELL</span>' : '') + pill +
           (h ? `<span class="hp ${pct == null ? '' : pct >= 0 ? 'up' : 'dn'}" title="You hold this in ${h.n} ${st.mode} wallet${h.n > 1 ? 's' : ''}">◎ ${sol(h.worth)}${usd(h.worth) ? ' · ' + usd(h.worth) : ''}${pct == null ? '' : ` · ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}</span>` : '') +
           (st.qb > 0 ? `<button class="qb ${st.mode === 'live' ? 'live' : ''}" data-qb="${mint}" title="Quick buy ${st.qb} SOL ${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? 'split across ' : '× ') + nW + ' wallets ' : ''}(${st.mode.toUpperCase()})">⚡ ${st.qb}${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? ' ÷' : ' ×') + nW : ''}</button>` : '');
       }
+      const was = ui.flt;
+      ui.flt = { m: nM, h: nH, live };
+      if (!was || was.m !== nM || was.h !== nH || was.live !== live) render();
     }
     let peekEl = null, peekT = 0;
     function showPeek(pill) {
@@ -2141,6 +2299,9 @@
         .agtw-held{box-shadow:inset 3px 0 0 #a3e635}
         .agtw-dev{box-shadow:inset 3px 0 0 #ef4444}
         .agtw-sig{box-shadow:inset 3px 0 0 #B8F04A;background:#B8F04A12!important}
+        .agtw-c .am{background:#a3e635;border:1px solid #a3e635;color:#0d1117;border-radius:5px;padding:0 5px;font:700 10px/1.5 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+        .agtw-c .am.y{background:#fbbf24;border-color:#fbbf24}.agtw-c .am.r{background:#f87171;border-color:#f87171}
+        .agtw-dim{opacity:.22;filter:grayscale(1);transition:opacity .15s}.agtw-dim:hover{opacity:.8}
         .agtw-c .sg{background:#B8F04A;border:1px solid #B8F04A;color:#15180F;border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em}
         .agtw-peek{position:fixed;right:auto;bottom:auto;z-index:100003;width:280px;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:8px;background:#1C1F25;border:1px solid #4E6420;border-radius:12px;padding:10px;color:#E6E8EC;box-shadow:0 18px 44px #000c;display:none;font:500 11.5px/1.35 'IBM Plex Sans',Inter,system-ui,sans-serif}
         .agtw-peek .sh{display:flex;align-items:center;gap:6px}.agtw-peek .sp{flex:1}
@@ -2156,6 +2317,8 @@
       const stop = (e) => { if (e.target.closest && e.target.closest('.agtw-c')) { e.preventDefault(); e.stopImmediatePropagation(); return true; } return false; };
       window.addEventListener('click', (e) => {
         if (!stop(e)) return;
+        const ago = e.target.closest('[data-agopen]');
+        if (ago) { window.open(AG + '/#token/' + ago.dataset.agopen, '_blank', 'noopener'); return; }
         const pb = e.target.closest('[data-pbuy],[data-popen],[data-phide]');
         if (pb) {
           const d = pb.dataset;
@@ -2472,7 +2635,7 @@
 
       const mu = mint ? mcapNow(mint) : null, cp = mint ? curvePct(mint) : null, tk = mint && ticks[mint], lv = isLive(mint);
       const tokLine = mint
-        ? `<div class="tk"><b>${escH(sym || 'Token')}</b><span class="mut n sm">${tail(mint)}</span><button class="ib" data-cpm="${mint}" title="Copy mint">${ICON.copy}</button><button class="ib ${ui.panel === 'info' ? 'on' : ''}" data-a="p:info" title="Coin info: AG profile, your trades, connection">${ICON.info}</button><span class="sp"></span>
+        ? `<div class="tk"><b>${escH(sym || 'Token')}</b><span class="mut n sm">${tail(mint)}</span><button class="ib" data-cpm="${mint}" title="Copy mint">${ICON.copy}</button><button class="ib ${ui.panel === 'info' ? 'on' : ''}" data-a="p:info" title="Coin info: AG profile, your trades, connection">${ICON.info}</button>${agTokChip(mint)}<span class="sp"></span>
           ${ui.busy ? `<span class="busy">${escH(ui.busy)}…</span>` : ''}${lv ? `<span class="lvd" title="Live price · ${srcName(tk.src)} stream"></span>` : ''}${mu ? `<span class="n mc ${lv && tk.dir > 0 ? 'up' : lv && tk.dir < 0 ? 'dn' : ''}" title="Market cap">$${kfmt(mu)}</span>` : ''}${cp != null ? `<span class="cv" title="Bonding curve (estimated)"><i style="width:${cp.toFixed(0)}%"></i></span><span class="mut n sm">${cp >= 100 ? 'migr.' : cp.toFixed(0) + '%'}</span>` : ''}</div>`
         : '<div class="tk mut">Open a token to trade</div>';
 
@@ -2709,6 +2872,10 @@
         it('Feed', tk ? (now - tk.at < 60000 ? agoS(now - tk.at) : 'quiet') : '--', tk && now - tk.at < 60000 ? 'g' : 'n');
         const lead = rs.s === 'up' ? !!(h && h.leader) : (() => { const l = GM_getValue('twLeader', null); return !!l && now - l.at < 10000; })();
         it('Orders', authBad && act ? 'blocked' : lead ? 'AG tab' : act ? 'paused' : 'idle', authBad && act ? 'r' : lead ? 'g' : act ? 'y' : 'n');
+        if (st.filter.mode !== 'off') { // AG filter: matches · hidden (grey until a backtester tab has ever published)
+          const fl = ui.flt || {}, ever = !!(agPack && agPack.at);
+          it('Filter', !ever ? '--' : agLive() ? `${fl.m || 0}✓ ${fl.h || 0}${st.filter.mode === 'dim' ? '◐' : '⊘'}` : 'stale', !ever ? 'n' : agLive() ? 'g' : 'y');
+        }
         const ov = (rs.ri.o && rs.ri.o.v) || (h && h.v);
         if (authBad) action = { a: 'login', l: 'Log in' };
         else if (rs.s === 'legacy' || (rs.s === 'up' && ov && ov !== VER)) { action = { a: 'reload', l: `Reload AG tab${ov ? ' (' + ov + ' → ' + VER + ')' : ''}` }; }
@@ -2744,6 +2911,8 @@
           ['AG API', a ? `session ${a.ok ? 'OK' : a.status} · ${a.via === 'direct' ? 'direct call' : 'checked'} ${agoS(now - a.at)} ago` : 'no call yet', byK.AG, a && a.ok ? msS(a.ms) : '--', 'ag'],
           ['AG socket', h.sock ? (S.ok ? `connected ${agoS(now - S.since)} · ${S.subs} coin${S.subs === 1 ? '' : 's'} · ${S.re} reconnect${S.re === 1 ? '' : 's'}` : 'disconnected · retrying') : 'runs in the backtester tab', { c: h.sock ? (S.ok ? 'g' : 'y') : 'n' }, h.sock && S.ok ? agoS(now - Math.max(S.last || 0, S.ping || 0, S.since || 0)) : '--', null],
           ['Price feed', `${SN} title ticks${stream.at ? ' · AG ticks ' + agoS(now - stream.at) + ' ago' : ''}`, byK.Feed, byK.Feed.v, null],
+          ...(byK.Filter ? [['AG filter', !(agPack && agPack.at) ? 'no match list yet · open the backtester with its Live Terminal on screen'
+            : `${{ smart: 'smart hide', dim: 'dim', badge: 'badges only' }[st.filter.mode]}${agLive() ? '' : ' → badges only (list is stale)'} · ${(ui.flt || {}).m || 0} AG coins here · ${(ui.flt || {}).h || 0} ${st.filter.mode === 'dim' ? 'dimmed' : 'hidden'} · list ${agoS(now - agPack.at)} old`, byK.Filter, byK.Filter.v, null]] : []),
           ['Order watcher', `${byK.Orders.v === 'AG tab' ? 'runs in the backtester tab' : byK.Orders.v === 'idle' ? 'no active orders' : 'needs the backtester tab'} · ${act} active`, byK.Orders, '', null],
         ];
       }
@@ -2867,6 +3036,11 @@
         <span class="sm2">Size & ${env === 'ag' ? 'terminal' : SN} cards</span>
         <div class="eg two">${f('scalePct', 'Size % (or drag the corner)', Math.round((Number(st.scale) || 1) * 100), 5)}${ck('autoFit', 'Auto-fit screen height', st.autoFit)}
           ${f('qb', 'Card quick buy (◎)', st.qb, 0.01)}${ck('cards', 'Holdings + quick buy on cards', st.cards)}</div>
+        ${env === 'ag' ? '' : `<span class="sm2">AG filter on ${SN} lists <span class="mut sm">(your filtered AG Live Terminal)</span></span>
+        <div class="sh"><span class="seg">${[['smart', 'Smart hide'], ['dim', 'Dim'], ['badge', 'Badges only'], ['off', 'Off']].map(([k, l]) => `<button class="${st.filter.mode === k ? 'on' : ''}" data-fm="${k}">${l}</button>`).join('')}</span></div>
+        <div class="mut sm">Smart hide is reversible: a coin is back the moment AG matches it. Your current coin is never hidden, and while the list is stale (backtester closed or Live Terminal off screen) only badges show.</div>
+        ${site && site.nativeHide ? `<div class="eg two">${ck('flt.native', `Also use ${SN}'s own Hide token`, st.filter.native)}${f('flt.after', 'after a coin is unmatched for (min)', st.filter.after, 1)}</div>
+        <div class="mut sm">${SN}'s own hide stays hidden in your ${SN} account: if AG matches the coin later it won't come back by itself. ${nativeDone.size} hidden that way so far.</div>` : ''}`}
         <span class="sm2">Layout</span>
         <div class="sh"><span class="seg">${[[380, 'Tall'], [720, 'Wide · 2 columns']].map(([w, l]) => `<button class="${(wideOn() ? 720 : 380) === w ? 'on' : ''}" data-lw="${w}">${l}</button>`).join('')}</span><span class="mut sm">or drag the right edge</span></div>
         <span class="sm2">Holdings bar</span>
@@ -2917,6 +3091,7 @@
       if (d.pinit) return sellInit(d.pinit);
       if (d.ps) { ui.posSort = d.ps; return render(); }
       if (d.hk) { st.hotkeys = d.hk; save(); return render(); }
+      if (d.fm) { st.filter.mode = d.fm; save(); scanCards(); return render(); }
       if (d.lw) { setW(Number(d.lw)); save(); return render(); }
       if (d.tt) { ui.tf.tab = d.tt; ui.tf.target = ''; return render(); }
       if (d.tq) {
@@ -3040,6 +3215,8 @@
       else if (d.s === 'unhideOnSignal') { st.unhideOnSignal = ch; save(); }
       else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
+      else if (d.s === 'flt.native') { st.filter.native = ch; save(); scanCards(); }
+      else if (d.s === 'flt.after') st.filter.after = Math.max(0, v || 0);
       else if (d.s === 'confirmAbove') st.confirmAbove = v || 0;
       else if (d.s === 'qb') st.qb = Math.max(0, v || 0);
       else if (d.s === 'stagger') st.stagger = Math.min(10000, Math.max(0, v || 0));
@@ -3375,7 +3552,7 @@
       try { startStream(); } catch (e) { console.warn('[AG widget] live stream', e); }
       try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { agPack: () => agPack, nativeDone, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s

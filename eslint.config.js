@@ -12,7 +12,7 @@ module.exports = [
   { ignores: ['node_modules/', 'test/e2e/shots/', 'design/'] },
   js.configs.recommended,
   {
-    files: ['ag-trade-widget.user.js'],
+    files: ['ag-trade-widget.user.js', 'ag-intel.user.js'],
     languageOptions: { ecmaVersion: 2022, sourceType: 'script', globals: { ...globals.browser, ...tampermonkey, module: 'readonly' } },
     rules: {
       'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }],

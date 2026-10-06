@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.8.0
+- **AG filter on every terminal** (GMGN, Trojan, Axiom), moved here from AG Intel. The backtester tab publishes the
+  coins of your filtered Live Terminal; terminal lists then:
+  - badge each AG coin on its card (`AG <risk> · <×> from signal`, colored by risk; click opens it on AG),
+  - **smart hide** the rest (default): reversible, a coin is back the moment AG matches it; or dim / badges only / off,
+  - never hide the coin you are on, and show badges only while the list is stale (backtester closed, or its Live
+    Terminal off screen for 15 min).
+- Optional: also use the terminal's own **Hide token** (GMGN, Axiom) for coins still unmatched after N minutes. Off by
+  default because those hides stay in your account there.
+- Footbar **Filter** item (`12✓ 40⊘`), a row in the connection panel, and an `AG ✓` / `not in AG` chip on the coin
+  you are on. Settings: ⚙ → AG filter.
+- Hidden rows in virtual lists hide their wrapper instead of leaving the layout.
+
+## AG Intel 2.0.0
+- Now lives in this repo (`ag-intel.user.js`, auto-updates from here) and runs on the backtester only: its GMGN
+  overlay moved to AG Trade Widget 3.8.0 (AG filter), on every terminal.
+- Pure logic in one `Core` block (risk / momentum / wallet scores, launch-vs-now deltas, trailing-stop step, socials
+  and copycat parsing, GMGN payload picking, safe markdown), unit-tested in Node.
+- AI brief providers (Grok, Claude) behind one interface; one GM request helper for every external call.
+- Safer: `@connect *` removed (only the hosts it uses), `@noframes`, symbols in the trailing-SL log are escaped.
+- Same panel, settings, API keys and trailing stop-loss state as 1.x (nothing to set up again).
+
 ## 3.7.0
 - **Axiom** (`axiom.trade`) support: the widget, holdings bar, positions and exits on every Axiom page; buy / sell
   on a coin page (`/meme/<pair>`). The URL holds the pair address, so the mint is read from the page's own Solscan /

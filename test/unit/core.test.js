@@ -370,3 +370,54 @@ test.describe('site adapters', () => {
     assert.equal(C.srcName('axiom'), 'Axiom');
   });
 });
+
+test.describe('AG filter', () => {
+  const now = 1_800_000_000_000;
+  test('riskScore', () => {
+    assert.deepEqual(C.riskScore(null), { score: null, flags: [] });
+    const clean = C.riskScore({ bundledPct: 5, topHoldersPct: 20, drainedPct: 0, liquidityPct: 30, creatorHoldingPct: 1, buyVolumePct: 60 });
+    assert.equal(clean.score, 0);
+    const bad = C.riskScore({ bundledPct: 70, topHoldersPct: 55, drainedPct: 3, drainedCount: 2, creatorHoldingPct: 8, freshDeployer: true, liquidityPct: 5, buyVolumePct: 30 });
+    assert.equal(bad.score, 25 + 15 + 10 + 10 + 5 + 6 + 5);
+    assert.ok(bad.flags.some(([p, f]) => p === 25 && /Bundled 70%/.test(f)));
+    const cap = C.riskScore({ bundledPct: 70, topHoldersPct: 55, drainedPct: 3, creatorHoldingPct: 8 }, { ch: { cohortHoldingPct: 40 }, rug: { risks: [{ level: 'danger', name: 'a' }, { level: 'danger', name: 'b' }, { level: 'danger', name: 'c' }] } });
+    assert.equal(cap.score, 25 + 15 + 10 + 10 + 15 + 25, 'RugCheck adds at most 25');
+    assert.equal(C.riskScore({ bundledPct: 99, topHoldersPct: 99, drainedPct: 9, creatorHoldingPct: 50, freshDeployer: true, isMayhemMode: true, liquidityPct: 1, buyVolumePct: 1 }, { ch: { cohortHoldingPct: 90 }, rug: { risks: Array(9).fill({ level: 'danger', name: 'x' }) } }).score, 100);
+  });
+  test('matchOf / mergeMatches', () => {
+    const row = { tokenAddress: MINT, symbol: 'JEV', signalMcap: 5000, currentMcap: 6000, winPredPercent: 61.6, criteria: { bundledPct: 30 } };
+    assert.deepEqual(C.matchOf(row, 10000, now), { s: 'JEV', r: 8, w: 62, x: 2, t: now });
+    assert.equal(C.matchOf(row, null, now).x, 1.2, 'falls back to currentMcap');
+    const store = { old: { t: now - 3600e3 - 1 }, keep: { t: now - 1000 } };
+    C.mergeMatches(store, [{ row, liveMcap: 7500 }, { row: {} }], now, 3600e3);
+    assert.deepEqual(Object.keys(store).sort(), ['keep', MINT].sort());
+    assert.equal(store[MINT].x, 1.5);
+  });
+  test('matchesLive', () => {
+    assert.equal(C.matchesLive(null, now), false);
+    assert.equal(C.matchesLive({ at: now - 1000, cardsAt: now - 1000 }, now), true);
+    assert.equal(C.matchesLive({ at: now - 91000, cardsAt: now - 1000 }, now), false, 'backtester tab silent');
+    assert.equal(C.matchesLive({ at: now - 1000, cardsAt: now - 16 * 60000 }, now), false, 'Live Terminal off screen');
+    assert.equal(C.matchesLive({ at: now - 1000 }, now), false, 'never saw cards');
+  });
+  test('filterAction', () => {
+    assert.equal(C.filterAction('smart', true, false, false), 'hide');
+    assert.equal(C.filterAction('smart', true, true, false), 'show', 'a match always shows (smart = reversible)');
+    assert.equal(C.filterAction('smart', true, false, true), 'show', 'never hide the coin you are on');
+    assert.equal(C.filterAction('smart', false, false, false), 'show', 'stale list → badges only');
+    assert.equal(C.filterAction('dim', true, false, false), 'dim');
+    assert.equal(C.filterAction('badge', true, false, false), 'show');
+    assert.equal(C.filterAction('off', true, false, false), 'show');
+    assert.equal(C.filterAction('weird', true, false, false), 'show');
+  });
+  test('nativeDue', () => {
+    const f = { mode: 'smart', native: true, after: 10 };
+    assert.equal(C.nativeDue(f, true, false, now - 11 * 60000, now), true);
+    assert.equal(C.nativeDue(f, true, false, now - 9 * 60000, now), false, 'grace period');
+    assert.equal(C.nativeDue(f, true, true, now - 11 * 60000, now), false, 'matched');
+    assert.equal(C.nativeDue(f, false, false, now - 11 * 60000, now), false, 'stale list');
+    assert.equal(C.nativeDue({ ...f, native: false }, true, false, now - 11 * 60000, now), false, 'opt-in');
+    assert.equal(C.nativeDue({ ...f, mode: 'dim' }, true, false, now - 11 * 60000, now), false, 'smart mode only');
+    assert.equal(C.nativeDue({ ...f, after: 0 }, true, false, now, now), true);
+  });
+});
