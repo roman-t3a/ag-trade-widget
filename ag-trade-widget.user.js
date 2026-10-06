@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.0.0
+// @version      3.3.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester and on GMGN.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -98,7 +98,7 @@
 
   function agPathAllowed(method, path) {
     return /^(GET|POST)$/.test(method) &&
-      /^\/api\/(tokens\/[1-9A-HJ-NP-Za-km-z]{32,44}\/(buy|sell|profile|my-trades|annotations|tpsl|creator-holdings)|performance\/(wallets-list|holdings|positions|wallets\/tx-settings-all))(\?[\w=&.-]*)?$/.test(path);
+      /^\/api\/(tokens\/[1-9A-HJ-NP-Za-km-z]{32,44}\/(buy|sell|profile|my-trades|annotations|tpsl|creator-holdings|recent-swaps)|swaps\/by-token\/[1-9A-HJ-NP-Za-km-z]{32,44}|performance\/(wallets-list|holdings|positions|wallets\/tx-settings-all))(\?[\w=&.-]*)?$/.test(path);
   }
 
   function tradeWidget(env, getMint, getSymbol, localCall) {
@@ -124,6 +124,13 @@
       stratId: null,     // exit strategy attached to buys (null = none)
       hotkeys: 'hover',  // 'on' | 'hover' (only while the pointer is over the widget) | 'off'
       kbHints: true,
+      intel: { on: false, open: true }, // AG Intel panel docked to the widget on coin pages (off by default; ⚙ → AG Intel)
+      bar: true,         // holdings bar at the top of the page
+      w: 380,            // widget width at 100% size: ≥ 600 switches to the wide (2-column) layout
+      barOneClick: false,
+      barOnAg: false,
+      cardIntel: true,   // AG risk pill + hover peek on GMGN cards
+      hiddenCoins: [],
       alerts: {},
       scale: 1,          // widget size (drag the corner grip; double-click resets)
       autoFit: true,     // shrink to fit the screen height when needed
@@ -132,6 +139,9 @@
     st.protect = Object.assign({ arm: 70, floor: 15, pct: 100 }, st.protect || {});
     if (!Array.isArray(st.groups)) st.groups = [];
     if (!Array.isArray(st.strats)) st.strats = [];
+    st.intel = Object.assign({ on: false, open: true }, st.intel || {});
+    if (!st.v32) { st.v32 = 1; st.intel.on = false; } // 3.2: the side panel is opt-in now
+    if (!Array.isArray(st.hiddenCoins)) st.hiddenCoins = [];
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
     { const A = st.alerts || {};
       st.alerts = { dev: Object.assign({ on: true, pct: 1, auto: false }, A.dev), whale: Object.assign({ on: true, sol: 5 }, A.whale), move: Object.assign({ on: false, pct: 30 }, A.move),
@@ -172,13 +182,15 @@
       });
     }
     // isOrder: never re-send an order through a second path after a relay timeout (avoid double buys)
+    let relayDownAt = 0;
     async function call(calls, isOrder) {
       if (env === 'ag') return Promise.all(calls.map((c) => localCall(c.method, c.path, c.body)));
       let alive = Date.now() - (GM_getValue('agRelayAt', 0) || 0) < 30000;
-      if (!alive) { // nudge a throttled backtester tab, then re-check
+      if (!alive && Date.now() - relayDownAt > 20000) { // nudge a throttled backtester tab once, then re-check
         GM_setValue('twPing', Date.now());
         await new Promise((r) => setTimeout(r, 1500));
         alive = Date.now() - (GM_getValue('agRelayAt', 0) || 0) < 30000;
+        if (!alive) relayDownAt = Date.now(); // no backtester tab: go direct for the next 20s instead of waiting 1.5s every call
       }
       if (alive) {
         const r = await relay(calls);
@@ -1134,6 +1146,7 @@
       list: sv('<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', 15),
       info: sv('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>', 13),
       x: sv('<path d="M6 6l12 12M18 6L6 18"/>', 14),
+      chev: sv('<path d="M15 6l-6 6 6 6"/>', 14),
       share: sv('<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v13"/>', 13),
     };
 
@@ -1291,6 +1304,48 @@
     #agtw .pbx .g3 .btn{justify-content:center;height:34px}
     #agtw .cb{display:flex;align-items:center;gap:7px;padding:8px 10px;cursor:move}
     #agtw .cn{display:flex;flex-direction:column;margin-right:6px;white-space:nowrap}
+    #agtw{display:flex;align-items:stretch;width:auto!important}
+    #agtw .in{width:calc(var(--w) * var(--k));flex:none}
+    #agtw.col .in{width:auto}
+    #agtw .rw{position:absolute;top:14px;bottom:22px;right:-3px;width:7px;cursor:ew-resize;z-index:4;border-radius:4px}
+    #agtw .rw:hover,#agtw .rw.on{background:#B8F04A55}
+    #agtw.col .rw{display:none}
+    #agtw.wide .bd{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start}
+    #agtw.wide .bd>.tk{grid-column:1/-1}
+    #agtw.wide .bd>.sbuy{grid-column:1;grid-row:2 / span 3}
+    #agtw.wide .bd>.ssell{grid-column:2;grid-row:2;padding-top:10px}
+    #agtw.wide .bd>.ax{grid-column:2;grid-row:3;margin-top:4px}
+    #agtw.wide .bd>.sep{display:none}
+    #agtw.wide .ft{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);column-gap:18px;align-items:center}
+    #agtw.wide .ft>.dl{grid-column:1/-1}
+    #agtw.wide .als{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+    #agtw.wide .pnl{max-height:360px}
+    #agtw .intel{position:relative;width:300px;flex:none;border-left:1px solid #34401F;background:#15171B;border-radius:0 14px 14px 0}
+    #agtw .intel .ii{position:absolute;inset:0;overflow:auto;scrollbar-width:thin;padding:10px;display:flex;flex-direction:column;gap:10px}
+    #agtw .intel.tab{width:30px;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0;background:#1A2012;color:var(--acc);font-size:10px}
+    #agtw .intel.tab .v{writing-mode:vertical-rl;transform:rotate(180deg)}
+    #agtw .intel.tab b{writing-mode:vertical-rl;transform:rotate(180deg);font-size:11px}
+    #agtw .ihd{position:sticky;top:-10px;background:#15171B;margin:-10px -10px 0;padding:8px 10px;z-index:1;border-bottom:1px solid var(--ln2)}
+    #agtw .ihero{display:flex;gap:10px;align-items:center;background:#1A2012;border:1px solid #4E6420;border-radius:12px;padding:10px}
+    #agtw .iring{position:relative;width:56px;height:56px;flex:none}
+    #agtw .iring .ic{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1}
+    #agtw .iring .ic span{font-size:8px;color:#A9C38A;letter-spacing:.06em}#agtw .iring .ic b{font-size:17px;color:var(--acc)}
+    #agtw .ih{display:flex;flex-direction:column;gap:3px;min-width:0}
+    #agtw .itg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+    #agtw .itile{background:#1C1F25;border:1px solid var(--ln);border-radius:9px;padding:6px 8px;display:flex;flex-direction:column;gap:1px}
+    #agtw .itile span{font-size:10px;color:var(--mut)}#agtw .itile b{font-size:13px}#agtw .itile small{font-size:9.5px;color:var(--mut)}
+    #agtw .itile.ok{border-color:#24563C}#agtw .itile.mid{border-color:#5A4A1C}#agtw .itile.bad{border-color:#5C2A33;background:#22161A}
+    #agtw .ibox{background:#1C1F25;border:1px solid var(--ln);border-radius:10px;padding:8px 9px;display:flex;flex-direction:column;gap:6px;min-width:0}
+    #agtw .ifl{display:flex;align-items:flex-end;gap:5px;height:48px}
+    #agtw .ifl>div{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:48px;gap:1px}
+    #agtw .ifl .fb{display:block;background:#4FAF7D;border-radius:3px 3px 0 0}#agtw .ifl .fs{display:block;background:#B9505F;border-radius:0 0 3px 3px}
+    #agtw .g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+    #agtw .tier{font-size:9.5px;font-weight:700;color:#15180F;background:var(--buy);border-radius:4px;padding:0 5px}
+    #agtw .lk3{width:100%;color:var(--tx)}
+    #agtw .imt{display:grid;grid-template-columns:1fr auto auto;gap:3px 10px;font-size:11px}
+    #agtw .iyou{display:flex;align-items:center;gap:8px;background:#13261C;border:1px solid #24563C;border-radius:10px;padding:7px 9px}
+    #agtw .iact .btn{justify-content:center;height:32px;text-decoration:none;color:var(--tx)}
+    #agtw .iact .btn.ok{color:var(--buy)}
     #agtw .btn.ghost{background:none}
     #agtw .btn.ok{border-color:var(--buyB);color:var(--buy);font-weight:700}
     #agtw .btn.danger{background:#B9505F;border-color:#B9505F;color:#FFF0F2;font-weight:700}
@@ -1432,6 +1487,158 @@
       return `<div class="olp"><div class="sh"><b>Active auto orders</b><span class="sp"></span><span class="mut sm">all tokens · hover a row for its log</span></div>${l.map((o) => oRow(o, true)).join('') || '<div class="mut">None.</div>'}</div>`;
     }
 
+    // ---------------------------------------------------------- AG Intel (docked panel on coin pages + card insight)
+    // Sources (AG's own endpoints, same ones its token page uses):
+    //  /api/tokens/<mint>/profile          → signalAt, firstSignalMcap, signalMcap, currentMcap, athMcap, winPredPercent,
+    //                                         metrics{…} (now) and firstMetrics{…} (at the first signal)
+    //  /api/tokens/<mint>/creator-holdings → creator / cohort share of supply, launch → now
+    //  /api/tokens/<mint>/recent-swaps     → live trades: side, solAmount, isSmartMoney, walletType (1 = fresh), blockTime
+    //  /api/swaps/by-token/<mint>          → the AG signals (preset matches) for this coin
+    const IM = [ // metric key, label, unit, "risk" direction (+1 = higher is worse, -1 = higher is better), watch / risk levels
+      ['creatorHoldingPct', 'Dev hold', '%', 1, 5, 10], ['bundledPct', 'Bundled', '%', 1, 10, 20], ['topHoldersPct', 'Top holders', '%', 1, 30, 45],
+      ['drainedPct', 'Drained', '%', 1, 15, 30], ['smCount', 'Smart money', '', -1, 1, 0], ['holdersCount', 'Holders', '', 0],
+    ];
+    const IM_MORE = [['agScore', 'AG score', ''], ['liquidityPct', 'Liquidity', '%'], ['volMcapPct', 'Vol / MCap', '%'], ['buyVolumePct', 'Buy vol', '%'], ['uniqueCount', 'Unique wallets', ''],
+      ['convincedWalletsCount', 'Convinced', ''], ['kycCount', 'KYC wallets', ''], ['dormantCount', 'Dormant', ''], ['drainedCount', 'Drained wallets', ''], ['fer', 'FER', ''], ['ttc', 'TTC', ''],
+      ['deployerAge', 'Deployer age', ''], ['deployerBalance', 'Deployer ◎', ''], ['marketDepth', 'Market depth', ''], ['liquidity', 'Liquidity $', '$']];
+    const intelCache = {}; // mint → { prof, creator, swaps, sigs, at, hist:[{t, holders}] }
+    const metric = (o, k) => { if (!o) return null; const v = o[k]; return v == null || v === '' ? null : typeof v === 'object' ? num(v.value, v.v, v.now) : num(v); };
+    const metricsOf = (p) => (p && (p.metrics || p.currentMetrics)) || {};
+    const firstOf = (p) => (p && (p.firstMetrics || p.signalMetrics)) || {};
+    function riskLevel(def, v) {
+      const [, , , dir, w, r] = def;
+      if (v == null || !dir) return 'n';
+      if (dir > 0) return v >= r ? 'bad' : v >= w ? 'mid' : 'ok';
+      return v > w ? 'ok' : v > r ? 'mid' : 'mid';
+    }
+    const fmtM = (v, u) => (v == null ? '--' : u === '%' ? (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)) + '%' : u === '$' ? '$' + kfmt(v) : Math.abs(v) >= 1000 ? kfmt(v) : String(Math.round(v * 100) / 100));
+    let intelBusy = {};
+    async function loadIntel(mint, force) {
+      if (!mint || intelBusy[mint]) return;
+      const c = intelCache[mint] || (intelCache[mint] = { hist: [] });
+      if (!force && c.at && Date.now() - c.at < 15000) return;
+      intelBusy[mint] = 1;
+      try {
+        const [p, cr, sw, sg] = await call([
+          { method: 'GET', path: `/api/tokens/${mint}/profile` }, { method: 'GET', path: `/api/tokens/${mint}/creator-holdings` },
+          { method: 'GET', path: `/api/tokens/${mint}/recent-swaps?limit=100` }, { method: 'GET', path: `/api/swaps/by-token/${mint}` }]);
+        if (p && p.ok && p.j && p.j.found !== false) c.prof = p.j.profile || p.j;
+        if (cr && cr.ok && cr.j && cr.j.available !== false) c.creator = cr.j.figures || null;
+        if (sw && sw.ok && Array.isArray(sw.j.swaps)) c.swaps = sw.j.swaps;
+        if (sg && sg.ok && Array.isArray(sg.j.swaps)) c.sigs = sg.j.swaps;
+        c.at = Date.now();
+        const h = metric(metricsOf(c.prof), 'holdersCount');
+        if (h != null) { c.hist.push({ t: c.at, v: h }); c.hist = c.hist.slice(-40); }
+        if (DEBUG) console.log('[AG widget] intel', mint, c);
+      } finally { delete intelBusy[mint]; }
+      if (mint === getMint()) render();
+    }
+    function intelFacts(mint) {
+      const c = intelCache[mint];
+      if (!c || !c.prof) return null;
+      const p = c.prof, M = metricsOf(p), F = firstOf(p);
+      const first = num(p.firstSignalMcap, p.signalMcap), now = mcapNow(mint) || num(p.currentMcap), ath = Math.max(num(p.athMcap) || 0, now || 0) || null;
+      return { p, M, F, first, now, ath, mult: first && now ? now / first : null, athMult: first && ath ? ath / first : null, signalAt: num(p.signalAt), win: num(p.winPredPercent, M.winPredPercent), score: metric(M, 'agScore') };
+    }
+    function flowOf(swaps) {
+      const now = Date.now() / 1000, bins = [0, 1, 2, 3, 4].map(() => ({ b: 0, s: 0 }));
+      let smB = 0, smS = 0, fresh = 0, net = 0;
+      for (const s of swaps || []) {
+        const t = num(s.blockTime, s.timestamp), sol = num(s.solAmount, s.amountSol) || 0;
+        if (!t || now - t > 300 || now - t < -30) continue;
+        const i = Math.min(4, Math.max(0, 4 - Math.floor((now - t) / 60))), buy = s.side === 'buy';
+        bins[i][buy ? 'b' : 's'] += sol; net += buy ? sol : -sol;
+        if (s.isSmartMoney || s.walletType === 2) buy ? smB++ : smS++;
+        if (buy && s.walletType === 1 && !s.isSmartMoney) fresh++;
+      }
+      return { bins, smB, smS, fresh, net };
+    }
+    const lvC = { ok: '#8FE6B4', mid: '#FFE08A', bad: '#F59AA6', n: '#E6E8EC' }; // hex: also used on GMGN cards, outside the widget's CSS vars
+    function intelHtml() {
+      const mint = getMint();
+      if (!mint || !st.intel.on || ui.edit) return '';
+      const c = intelCache[mint], f = intelFacts(mint);
+      if (!st.intel.open) {
+        const worst = f ? IM.map((d) => riskLevel(d, metric(f.M, d[0]))).sort((a, b) => ['bad', 'mid', 'ok', 'n'].indexOf(a) - ['bad', 'mid', 'ok', 'n'].indexOf(b))[0] : 'n';
+        return `<button class="intel tab" data-a="intel" title="Show AG Intel"><span class="agt v">AG</span>${f && f.mult ? `<b class="n">${f.mult.toFixed(2)}×</b>` : ''}<i class="dot" style="background:${lvC[worst]}"></i></button>`;
+      }
+      let body;
+      if (!c || (!c.prof && !c.at)) body = '<div class="mut sm">Loading AG data…</div>';
+      else if (!f) body = '<div class="mut sm">AG has no profile for this coin yet (no signal, or not indexed).</div>';
+      else {
+        const sigs = c.sigs || [], presets = [...new Set(sigs.map((s) => s.presetName || s.preset || s.presetLabel).filter(Boolean))];
+        const ago = f.signalAt ? Math.max(0, Math.round((Date.now() / 1000 - f.signalAt) / 60)) : null;
+        const ring = f.score != null ? Math.max(0, Math.min(100, f.score)) : null;
+        const hero = `<div class="ihero"><div class="iring">${ring != null ? `<svg viewBox="0 0 64 64" width="56" height="56"><circle cx="32" cy="32" r="27" fill="none" stroke="#2C3A18" stroke-width="7"/><circle cx="32" cy="32" r="27" fill="none" stroke="#B8F04A" stroke-width="7" stroke-linecap="round" stroke-dasharray="${(ring / 100) * 169.6} 170" transform="rotate(-90 32 32)"/></svg>` : ''}<div class="ic"><span>${ring != null ? 'SCORE' : 'AG'}</span><b class="n">${ring != null ? Math.round(f.score) : sigs.length || '—'}</b></div></div>
+          <div class="ih"><b>${sigs.length ? `${sigs.length} signal${sigs.length > 1 ? 's' : ''}` : 'No signal'}${presets.length ? ' · ' + escH(presets.slice(0, 2).join(', ')) + (presets.length > 2 ? ` +${presets.length - 2}` : '') : ''}</b>
+          ${f.first ? `<span class="n sm">signal ${mc$(f.first)}${ago != null ? ` · ${ago >= 60 ? Math.round(ago / 60) + 'h' : ago + 'm'} ago` : ''} → <b class="${f.mult >= 1 ? 'up' : 'dn'}">${f.now ? mc$(f.now) : '--'}${f.mult ? ' · ' + f.mult.toFixed(2) + '×' : ''}</b></span>` : ''}
+          <span class="n sm mut">${f.athMult ? `ATH ${f.athMult.toFixed(2)}× (${mc$(f.ath)})` : ''}${f.win != null ? ` · win pred ${f.win.toFixed(0)}%` : ''}</span></div></div>`;
+        const tiles = IM.map((d) => { const v = metric(f.M, d[0]), v0 = metric(f.F, d[0]), lv = riskLevel(d, v);
+          return `<div class="itile ${lv}" title="${escH(d[1])}${d[3] ? ` · watch ≥ ${d[4]}${d[2]}, risk ≥ ${d[5]}${d[2]} (rule of thumb)` : ''}"><span>${d[1]}</span><b class="n" style="color:${lvC[lv]}">${fmtM(v, d[2])}</b><small class="n">${v0 != null ? fmtM(v0, d[2]) + ' → ' + fmtM(v, d[2]) : 'at signal: --'}</small></div>`; }).join('');
+        const fl = flowOf(c.swaps), mx = Math.max(0.01, ...fl.bins.map((b) => b.b + b.s));
+        const flow = c.swaps ? `<div class="ibox"><div class="sh"><b class="sm2">Flow · last 5 min</b><span class="sp"></span><span class="n ${fl.net >= 0 ? 'up' : 'dn'}">net ${fl.net >= 0 ? '+' : '−'}◎ ${sol(Math.abs(fl.net))}</span></div>
+          <div class="ifl">${fl.bins.map((b) => `<div><i class="fb" style="height:${((b.b / mx) * 46).toFixed(1)}px"></i><i class="fs" style="height:${((b.s / mx) * 46).toFixed(1)}px"></i></div>`).join('')}</div>
+          <div class="pl n"><span>−5m</span><span>now</span></div>
+          <div class="g3s three"><div class="sb"><span class="lb">SMART MONEY</span><span class="n" title="smart-money buys / sells"><span class="up">${fl.smB}↑</span> <span class="dn">${fl.smS}↓</span></span></div><div class="sb"><span class="lb">FRESH BUYERS</span><span class="n">${fl.fresh}</span></div><div class="sb"><span class="lb">TRADES</span><span class="n">${(c.swaps || []).filter((s) => Date.now() / 1000 - num(s.blockTime, s.timestamp) < 300).length}</span></div></div></div>` : '';
+        const hs = c.hist, h0 = metric(f.F, 'holdersCount'), hn = metric(f.M, 'holdersCount');
+        let spark = '';
+        if (hs.length > 1) { const lo = Math.min(...hs.map((x) => x.v)), hi = Math.max(...hs.map((x) => x.v)); const pts = hs.map((x, i) => `${((i / (hs.length - 1)) * 150).toFixed(1)},${(30 - ((x.v - lo) / Math.max(1, hi - lo)) * 26).toFixed(1)}`).join(' '); spark = `<svg viewBox="0 0 150 32" width="100%" height="32" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#8FE6B4" stroke-width="2"/></svg>`; }
+        const cr = c.creator && c.creator.creator, co = c.creator && c.creator.cohort, tier = f.p.creatorTier || f.M.creatorTier;
+        const two = `<div class="g2"><div class="ibox"><div class="sh"><span class="lb">HOLDERS</span><span class="sp"></span><b class="n">${hn != null ? kfmt(hn) : '--'}</b></div>${spark}${h0 != null && hn != null ? `<span class="n sm ${hn >= h0 ? 'up' : 'dn'}">${hn >= h0 ? '+' : ''}${Math.round(hn - h0)} since signal</span>` : ''}</div>
+          <div class="ibox"><div class="sh"><span class="lb">CREATOR</span><span class="sp"></span>${tier ? `<span class="tier">TIER ${escH(String(tier))}</span>` : ''}</div>
+          ${cr ? `<span class="n sm">dev ${escH(String(cr.launch))} → <b>${escH(String(cr.now))}</b></span>` : '<span class="mut sm">no creator data</span>'}${co ? `<span class="n sm">cohort ${escH(String(co.launch))} → ${escH(String(co.now))}</span>` : ''}
+          ${metric(f.M, 'deployerAge') != null ? `<span class="n sm mut">deployer age ${fmtM(metric(f.M, 'deployerAge'), '')}</span>` : ''}</div></div>`;
+        const more = IM_MORE.map(([k, l, u]) => [l, metric(f.F, k), metric(f.M, k), u]).filter((x) => x[1] != null || x[2] != null);
+        const moreHtml = more.length ? `<div class="ibox"><button class="sh lk3" data-a="imore"><span class="lb">ALL AG METRICS · ${more.length}</span><span class="sp"></span>${ui.imore ? '−' : '+'}</button>${ui.imore ? `<div class="imt">${more.map(([l, a, b, u]) => `<span>${l}</span><span class="n mut">${fmtM(a, u)}</span><span class="n">${fmtM(b, u)}</span>`).join('')}</div>` : ''}</div>` : '';
+        const sm = mint === getMint() ? summary() : null;
+        const ex = (GM_getValue('twExits', {}) || {})[st.mode + ':' + mint];
+        const you = sm && sm.bal > 0 ? `<div class="iyou"><span class="lb">YOU</span><b class="n ${sm.pnlSol >= 0 ? 'up' : 'dn'}">${sm.pnlSol >= 0 ? '+' : '−'}◎ ${sol(Math.abs(sm.pnlSol || 0))}${sm.pnl != null ? ' · ' + (sm.pnl >= 0 ? '+' : '') + sm.pnl.toFixed(0) + '%' : ''}</b><span class="sp"></span>${ex ? `<span class="ptag srv">${escH(ex.name)} on AG</span>` : ''}</div>` : '';
+        body = hero + `<div class="lb">RISK · AT SIGNAL → NOW</div><div class="itg">${tiles}</div>` + flow + two + moreHtml + you;
+      }
+      const p = P(), first = (st.buyUnit === 'pct' ? p.sup : st.buyUnit === 'usd' ? p.usd : p.buy).find((a) => a > 0);
+      return `<div class="intel"><div class="ii"><div class="sh ihd"><span class="agt">AG INTEL</span><b>${escH(sym || tail(mint))}</b><span class="sp"></span><button class="ib" data-a="intelr" title="Refresh">${ICON.refresh}</button><button class="ib" data-a="intel" title="Collapse">${ICON.chev}</button></div>
+        ${body}
+        <div class="g3 iact"><button class="btn ok" data-bu="${first || ''}" ${first ? '' : 'disabled'}>Buy ${first ? unitLab(first, st.buyUnit) : ''}</button><button class="btn" data-a="idip">Dip −30%</button><a class="btn" href="https://backtester.alphagardeners.xyz/#token/${mint}" target="_blank" rel="noopener">Open on AG</a></div></div></div>`;
+    }
+
+    // ---------------------------------------------------------- AG insight on GMGN cards (visible cards only, cached)
+    const cardQ = new Set();
+    let cardBusy = 0;
+    function wantCardIntel(mint) {
+      if (!st.cardIntel || env === 'ag') return;
+      const c = intelCache[mint];
+      if (c && c.at && Date.now() - c.at < 90000) return;
+      cardQ.add(mint); pumpCards();
+    }
+    async function pumpCards() {
+      while (cardBusy < 3 && cardQ.size) {
+        const m = cardQ.values().next().value; cardQ.delete(m); cardBusy++;
+        (async () => {
+          try {
+            const c = intelCache[m] || (intelCache[m] = { hist: [] });
+            const [p] = await call([{ method: 'GET', path: `/api/tokens/${m}/profile` }]);
+            if (p && p.ok && p.j && p.j.found !== false) c.prof = p.j.profile || p.j;
+            c.at = c.at || Date.now(); c.cardAt = Date.now();
+          } finally { cardBusy--; scanCards(); pumpCards(); }
+        })();
+      }
+    }
+    function cardPill(mint) {
+      const f = intelFacts(mint);
+      if (!f) return '';
+      const seg = [['creatorHoldingPct', 'D'], ['bundledPct', 'B'], ['topHoldersPct', 'T'], ['smCount', 'SM']].map(([k, l]) => { const d = IM.find((x) => x[0] === k), v = metric(f.M, k); return v == null ? '' : `<span style="color:${lvC[riskLevel(d, v)]}">${l} ${fmtM(v, d[2])}</span>`; }).filter(Boolean);
+      if (!seg.length && !f.mult) return '';
+      return `<span class="ip" data-peek="${mint}">${seg.join('<i>·</i>')}</span>`;
+    }
+    function peekHtml(mint) {
+      const f = intelFacts(mint);
+      if (!f) return '';
+      const tiles = IM.slice(0, 5).map((d) => { const v = metric(f.M, d[0]), lv = riskLevel(d, v); return `<div><span>${d[1]}</span><b class="n" style="color:${lvC[lv]}">${fmtM(v, d[2])}</b></div>`; }).join('');
+      return `<div class="sh"><span class="agt">AG</span><b>${escH(f.p.symbol || (heldAll[mint] || {}).sym || tail(mint))}</b>${f.mult ? `<span class="n ${f.mult >= 1 ? 'up' : 'dn'}">${f.mult.toFixed(2)}× signal</span>` : ''}<span class="sp"></span>${f.win != null ? `<span class="n mut">win ${f.win.toFixed(0)}%</span>` : ''}</div>
+        <div class="pg">${tiles}<div><span>ATH</span><b class="n up">${f.athMult ? f.athMult.toFixed(2) + '×' : '--'}</b></div></div>
+        <div class="g3"><button class="qbp" data-pbuy="${mint}">Buy ${st.qb} ◎</button><button class="qbp" data-popen="${mint}">Open</button><button class="qbp" data-phide="${mint}">Hide coin</button></div>`;
+    }
+
     // ---------------------------------------------------------- GMGN card overlay
     // On every GMGN token card / table row: your position (all wallets in the current mode) with PnL,
     // plus a ⚡ quick-buy button (amount in ⚙, uses the current mode, buy mode and your default wallet selection).
@@ -1456,12 +1663,14 @@
       heldAll = m; held = m; heldAt = Date.now();
       if (env !== 'ag' && st.cards) scanCards();
       if (ui.panel === 'pos') render();
+      renderBar();
     }
     const positioned = new WeakSet();
     function scanCards() {
       if (env === 'ag' || document.hidden) return;
       if (!st.cards) { document.querySelectorAll('.agtw-c').forEach((e) => e.remove()); document.querySelectorAll('.agtw-held').forEach((e) => e.classList.remove('agtw-held')); return; }
-      const seen = new Set();
+      const seen = new Set(), hidden = new Set(st.hiddenCoins || []), vh = window.innerHeight;
+      const devAl = new Set(loadAlerts().filter((a) => a.kind === 'dev' && !ui.alertsGone[a.id]).map((a) => a.mint));
       for (const el of document.querySelectorAll('div[href*="/sol/token/"], tr a[href*="/sol/token/"]')) {
         if (el.closest('#agtw')) continue;
         const row = el.tagName === 'A' ? el.closest('tr') : el;
@@ -1470,10 +1679,15 @@
         seen.add(hostEl);
         const mint = ((el.getAttribute('href') || '').match(CARD_MINT) || [])[1];
         if (!mint) continue;
-        const h = held[mint];
-        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}`;
+        const hide = hidden.has(mint) && mint !== getMint();
+        if ((row.style.display === 'none') !== hide) row.style.display = hide ? 'none' : '';
+        if (hide) continue;
+        if (st.cardIntel) { const r = hostEl.getBoundingClientRect(); if (r.bottom > -200 && r.top < vh + 200) wantCardIntel(mint); }
+        const h = held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint);
+        const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}`;
         let c = hostEl.querySelector(':scope > .agtw-c');
         if (hostEl.classList.contains('agtw-held') !== !!h) hostEl.classList.toggle('agtw-held', !!h);
+        if (hostEl.classList.contains('agtw-dev') !== dev) hostEl.classList.toggle('agtw-dev', dev);
         if (c && c.dataset.k === key) continue;
         if (!c) {
           c = document.createElement('div'); c.className = 'agtw-c';
@@ -1483,10 +1697,24 @@
         c.dataset.k = key;
         const cost = h ? h.worth - h.pnl : 0, pct = h && cost > 0 ? (h.pnl / cost) * 100 : null;
         const nW = (st.wallets.live || []).length;
-        c.innerHTML = (h ? `<span class="hp ${pct == null ? '' : pct >= 0 ? 'up' : 'dn'}" title="You hold this in ${h.n} ${st.mode} wallet${h.n > 1 ? 's' : ''}">◎ ${sol(h.worth)}${usd(h.worth) ? ' · ' + usd(h.worth) : ''}${pct == null ? '' : ` · ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}</span>` : '') +
+        c.innerHTML = (dev ? '<span class="dv" title="The creator just sold (AG alert)">DEV SELL</span>' : '') + pill +
+          (h ? `<span class="hp ${pct == null ? '' : pct >= 0 ? 'up' : 'dn'}" title="You hold this in ${h.n} ${st.mode} wallet${h.n > 1 ? 's' : ''}">◎ ${sol(h.worth)}${usd(h.worth) ? ' · ' + usd(h.worth) : ''}${pct == null ? '' : ` · ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}</span>` : '') +
           (st.qb > 0 ? `<button class="qb ${st.mode === 'live' ? 'live' : ''}" data-qb="${mint}" title="Quick buy ${st.qb} SOL ${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? 'split across ' : '× ') + nW + ' wallets ' : ''}(${st.mode.toUpperCase()})">⚡ ${st.qb}${st.mode === 'live' && nW > 1 ? (st.buyMode === 'split' ? ' ÷' : ' ×') + nW : ''}</button>` : '');
       }
     }
+    let peekEl = null, peekT = 0;
+    function showPeek(pill) {
+      const mint = pill.dataset.peek, html = peekHtml(mint);
+      if (!html) return;
+      if (!peekEl) { peekEl = document.createElement('div'); peekEl.className = 'agtw-c agtw-peek'; document.body.appendChild(peekEl);
+        peekEl.addEventListener('mouseenter', () => clearTimeout(peekT)); peekEl.addEventListener('mouseleave', hidePeek); }
+      clearTimeout(peekT);
+      peekEl.innerHTML = html; peekEl.dataset.mint = mint; peekEl.style.display = 'flex';
+      const r = pill.getBoundingClientRect(), w = 280, hgt = peekEl.offsetHeight || 170;
+      peekEl.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, r.right - w)) + 'px';
+      peekEl.style.top = (r.top - hgt - 8 > 6 ? r.top - hgt - 8 : r.bottom + 8) + 'px';
+    }
+    function hidePeek() { clearTimeout(peekT); peekT = setTimeout(() => { if (peekEl) peekEl.style.display = 'none'; }, 180); }
     function startCards() {
       const css = document.createElement('style');
       css.textContent = `
@@ -1496,12 +1724,35 @@
         .agtw-c .qb{background:#14532d;border:1px solid #22c55e;color:#dcfce7;border-radius:5px;padding:0 6px;cursor:pointer;font:inherit}
         .agtw-c .qb:hover{background:#166534}
         .agtw-c .qb.live{background:#7f1d1d;border-color:#ef4444;color:#fee2e2}
-        .agtw-held{box-shadow:inset 3px 0 0 #a3e635}`;
+        .agtw-c .ip{background:#0d1117eb;border:1px solid #2b3240;border-radius:5px;padding:0 6px;white-space:nowrap;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-weight:500;font-size:10px;cursor:help}
+        .agtw-c .ip:hover{border-color:#B8F04A}
+        .agtw-c .ip i{font-style:normal;color:#4b5563;margin:0 3px}
+        .agtw-c .dv{background:#7f1d1d;border:1px solid #ef4444;color:#fee2e2;border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em}
+        .agtw-held{box-shadow:inset 3px 0 0 #a3e635}
+        .agtw-dev{box-shadow:inset 3px 0 0 #ef4444}
+        .agtw-peek{position:fixed;right:auto;bottom:auto;z-index:100003;width:280px;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:8px;background:#1C1F25;border:1px solid #4E6420;border-radius:12px;padding:10px;color:#E6E8EC;box-shadow:0 18px 44px #000c;display:none;font:500 11.5px/1.35 'IBM Plex Sans',Inter,system-ui,sans-serif}
+        .agtw-peek .sh{display:flex;align-items:center;gap:6px}.agtw-peek .sp{flex:1}
+        .agtw-peek .agt{font-size:9.5px;font-weight:700;letter-spacing:.08em;color:#15180F;background:#B8F04A;border-radius:4px;padding:1px 5px}
+        .agtw-peek .n{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}.agtw-peek .up{color:#8FE6B4}.agtw-peek .dn{color:#F59AA6}.agtw-peek .mut{color:#8B919C}
+        .agtw-peek .pg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+        .agtw-peek .pg>div{background:#17191E;border-radius:7px;padding:4px 6px;display:flex;flex-direction:column}.agtw-peek .pg span{font-size:9.5px;color:#8B919C}
+        .agtw-peek .g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+        .agtw-peek .qbp{height:28px;border-radius:7px;border:1px solid #2C3038;background:#24272E;color:#E6E8EC;font:600 11px Inter,system-ui,sans-serif;cursor:pointer}
+        .agtw-peek .qbp[data-pbuy]{border-color:#4FAF7D;background:none;color:#8FE6B4}`;
       document.head.appendChild(css);
       // capture phase on window: runs before GMGN's own card click (which would open the token)
       const stop = (e) => { if (e.target.closest && e.target.closest('.agtw-c')) { e.preventDefault(); e.stopImmediatePropagation(); return true; } return false; };
       window.addEventListener('click', (e) => {
         if (!stop(e)) return;
+        const pb = e.target.closest('[data-pbuy],[data-popen],[data-phide]');
+        if (pb) {
+          const d = pb.dataset;
+          if (d.pbuy) buy(st.qb, d.pbuy, (intelFacts(d.pbuy) || { p: {} }).p.symbol || '');
+          if (d.popen) openCoin(d.popen);
+          if (d.phide) { st.hiddenCoins = [...new Set((st.hiddenCoins || []).concat(d.phide))].slice(-300); save(); toast('Coin hidden from GMGN lists · unhide in ⚙'); scanCards(); }
+          if (peekEl) peekEl.style.display = 'none';
+          return;
+        }
         const b = e.target.closest('.qb');
         if (!b) return;
         const card = b.closest('div[href*="/sol/token/"], tr');
@@ -1509,6 +1760,8 @@
         buy(st.qb, b.dataset.qb, symG);
       }, true);
       ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach((t) => window.addEventListener(t, stop, true));
+      window.addEventListener('mouseover', (e) => { const p = e.target.closest && e.target.closest('.ip[data-peek]'); if (p) showPeek(p); }, true);
+      window.addEventListener('mouseout', (e) => { const p = e.target.closest && e.target.closest('.ip[data-peek]'); if (p) hidePeek(); }, true);
       let tm = null;
       const mine = (n) => n.nodeType === 1 && !!(n.matches('.agtw-c,.agtw-toast,#agtw') || n.closest('.agtw-c,#agtw'));
       new MutationObserver((muts) => {
@@ -1517,6 +1770,8 @@
         if (muts.every((m) => { const ns = [...m.addedNodes, ...m.removedNodes]; return mine(m.target) || (ns.length && ns.every(mine)); })) return;
         tm = setTimeout(() => { tm = null; scanCards(); }, 400);
       }).observe(document.body, { childList: true, subtree: true });
+      let st8 = null;
+      window.addEventListener('scroll', () => { clearTimeout(st8); st8 = setTimeout(scanCards, 250); }, true);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) { scanCards(); loadHeld(); } });
       loadHeld();
     }
@@ -1588,6 +1843,8 @@
     // (fonts, buttons, spacing, icons in em) scales together. k = your size (corner grip), auto-reduced to fit the screen.
     let curK = 1;
     const scalePx = (css) => css.replace(/(-?\d*\.?\d+)px/g, (_m, n) => `calc(${n} * var(--k))`);
+    const wideOn = () => (Number(st.w) || 380) >= 600;
+    function setW(w) { st.w = Math.round(Math.min(1000, Math.max(340, w))); if (el) { el.style.setProperty('--w', String(st.w)); el.classList.toggle('wide', !ui.collapsed && !ui.edit && wideOn()); } }
     function setK(k) { curK = k; if (el) el.style.setProperty('--k', k.toFixed(4) + 'px'); }
     function fit() {
       if (!el) return;
@@ -1635,13 +1892,81 @@
       if (f.tagName === 'SELECT') { const o = t.querySelector('option[selected]'); if (o) f.value = o.value || o.textContent; }
     }
 
+    // ---------------------------------------------------------- holdings bar (top of the page, GMGN style)
+    // One chip per open position in the current mode: coin · PnL ◎ (%) · ⚡ 100% sell. Click the coin to open it.
+    // The sell button arms on the first click and sells on the second (within 2.5s) unless "one-click" is on.
+    let barEl = null, barArm = { mint: null, at: 0 };
+    const BAR_CSS = `
+      #agtwBar{position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:100000;max-width:min(62vw,900px);display:flex;align-items:center;gap:6px;
+        background:#17191Ef2;border:1px solid #2C3038;border-radius:10px;padding:3px 4px 3px 8px;box-shadow:0 8px 24px #0009;font:500 12px/1 'IBM Plex Sans',Inter,system-ui,sans-serif;color:#E6E8EC}
+      #agtwBar .bt{font-size:9.5px;font-weight:700;letter-spacing:.08em;color:#15180F;background:#B8F04A;border-radius:4px;padding:2px 5px;cursor:pointer;flex:none;border:0}
+      #agtwBar .bt.paper{background:#3B82F6;color:#fff}
+      #agtwBar .bs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0}
+      #agtwBar .bc{display:flex;align-items:center;gap:6px;background:#1F2228;border:1px solid #2C3038;border-radius:8px;padding:2px 3px 2px 4px;flex:none}
+      #agtwBar .bc.cur{border-color:#4E6420}
+      #agtwBar .bn{display:flex;align-items:center;gap:6px;background:none;border:0;color:inherit;font:inherit;cursor:pointer;padding:0}
+      #agtwBar .bi{width:20px;height:20px;border-radius:20px;background:#2C3038;display:flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:700;color:#C9CDD4;flex:none}
+      #agtwBar .bsym{font-weight:600;max-width:84px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      #agtwBar .bp{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+      #agtwBar .up{color:#8FE6B4}#agtwBar .dn{color:#F59AA6}
+      #agtwBar .bx{background:#D9536A;border:0;color:#fff;border-radius:6px;padding:4px 7px;font:700 11.5px/1 Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+      #agtwBar .bx:hover{background:#E0677C}
+      #agtwBar .bx.arm{background:#F2B84B;color:#2A1D05}
+      #agtwBar .bx:disabled{opacity:.5;cursor:default}
+      #agtwBar .bsum{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11px;color:#8B919C;padding:0 4px;white-space:nowrap;flex:none}`;
+    function barHtml() {
+      const rows = Object.entries(heldAll).map(([mint, h]) => {
+        const live = mint === getMint() && pos, lp = live ? livePos() : null;
+        const worth = live ? Object.values(lp).reduce((a, x) => a + (num(x.worthSol) || 0), 0) : h.worth;
+        const pnl = live ? Object.values(lp).reduce((a, x) => a + (num(x.pnlSol) || 0), 0) : h.pnl;
+        const cost = worth - pnl;
+        return { mint, sym: h.sym || tail(mint), pnl, pct: cost > 0 ? (pnl / cost) * 100 : 0, worth };
+      }).sort((a, b) => b.worth - a.worth);
+      if (!rows.length) return '';
+      const tot = rows.reduce((a, r) => a + r.pnl, 0), armed = barArm.mint && Date.now() - barArm.at < 2500 ? barArm.mint : null;
+      return `<button class="bt ${st.mode}" data-bar="toggle" title="AG positions (${st.mode}) · click to hide">${st.mode === 'live' ? 'AG' : 'PAPER'}</button>
+        <div class="bs">${rows.map((r) => `<div class="bc ${r.mint === getMint() ? 'cur' : ''}"><button class="bn" data-bar="open" data-m="${r.mint}" title="Open ${escH(r.sym)} · ◎ ${sol(r.worth)} held">
+          <span class="bi">${escH(r.sym.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?')}</span><span class="bsym">${escH(r.sym)}</span>
+          <span class="bp ${r.pnl >= 0 ? 'up' : 'dn'}">◎ ${r.pnl >= 0 ? '+' : '−'}${sol(Math.abs(r.pnl))} (${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%)</span></button>
+          <button class="bx ${armed === r.mint ? 'arm' : ''}" data-bar="sell" data-m="${r.mint}" title="${st.barOneClick ? 'Sell 100% from every wallet holding it' : 'Click twice to sell 100% from every wallet holding it'}" ${ui.busy ? 'disabled' : ''}>${armed === r.mint ? 'Sure? 100%' : '⚡ 100%'}</button></div>`).join('')}</div>
+        ${rows.length > 1 ? `<span class="bsum ${tot >= 0 ? 'up' : 'dn'}" title="Unrealized PnL, all positions">Σ ${tot >= 0 ? '+' : '−'}${sol(Math.abs(tot))}</span>` : ''}`;
+    }
+    function renderBar() {
+      if (env === 'ag' && !st.barOnAg) { if (barEl) barEl.style.display = 'none'; return; }
+      if (!st.bar || st.barHidden) { if (barEl) barEl.style.display = 'none'; return; }
+      if (!barEl) {
+        const s = document.createElement('style'); s.textContent = BAR_CSS; document.head.appendChild(s);
+        barEl = document.createElement('div'); barEl.id = 'agtwBar'; document.body.appendChild(barEl);
+        barEl.addEventListener('click', onBarClick);
+        ['mousedown', 'pointerdown'].forEach((t) => barEl.addEventListener(t, (e) => e.stopPropagation()));
+      }
+      const html = barHtml();
+      barEl.style.display = html ? 'flex' : 'none';
+      if (html !== barEl.__html) { barEl.__html = html; patch(barEl, html); }
+    }
+    function onBarClick(e) {
+      const b = e.target.closest('[data-bar]');
+      if (!b) return;
+      e.preventDefault(); e.stopPropagation();
+      const d = b.dataset, h = heldAll[d.m] || {};
+      if (d.bar === 'toggle') { st.barHidden = true; save(); renderBar(); toast('Holdings bar hidden · bring it back in ⚙ or with B'); return; }
+      if (d.bar === 'open') return openCoin(d.m);
+      if (d.bar === 'sell') {
+        if (!st.barOneClick && !(barArm.mint === d.m && Date.now() - barArm.at < 2500)) { barArm = { mint: d.m, at: Date.now() }; renderBar(); setTimeout(renderBar, 2600); return; }
+        barArm = { mint: null, at: 0 };
+        execSell({ mint: d.m, symb: h.sym, pct: 100, interactive: true }).then(() => { setTimeout(loadHeld, 2500); });
+        renderBar();
+      }
+    }
+
     function render0() {
+      try { renderBar(); } catch (_) {}
       if (!el) return;
       const ae0 = document.activeElement, typing = ae0 && el.contains(ae0) && ae0.tagName === 'SELECT'; // an open <select> would close
       if (typing) return;
       const html = ui.collapsed ? collapsedHtml() : fullHtml();
-      const full = `<div class="in">${html}</div>${modalHtml()}<div class="rz" title="Drag to resize · double-click to reset"></div>`;
-      if (full !== el.__html) { el.__html = full; patch(el, full); el.classList.toggle('col', ui.collapsed); fit(); }
+      const full = `<div class="in">${html}</div>${ui.collapsed ? '' : intelHtml()}${modalHtml()}<div class="rw" title="Drag to change the width · double-click to reset (wide = 2 columns)"></div><div class="rz" title="Drag to resize · double-click to reset"></div>`;
+      if (full !== el.__html) { el.__html = full; patch(el, full); el.classList.toggle('col', ui.collapsed); el.classList.toggle('wide', !ui.collapsed && !ui.edit && wideOn()); fit(); }
       el.classList.toggle('col', ui.collapsed);
     }
 
@@ -1804,10 +2129,10 @@
       const panel = ed ? '' : ui.panel === 'wal' ? pickerHtml() : ui.panel === 'set' ? settingsHtml() : ui.panel === 'trig' ? trigHtml(orders) : ui.panel === 'pos' ? posHtml(orders) : ui.panel === 'info' ? infoHtml() : ui.panel === 'share' ? shareHtml() : '';
       return `${groupsRow}${head}${panel}${ed ? '' : alertsHtml()}
         <div class="bd">${tokLine}
-          <div class="sec">${buyHead}<div class="g4">${buyTiles}</div>${ed ? edBuy : txLine('buy')}${cu}</div>
+          <div class="sec sbuy">${buyHead}<div class="g4">${buyTiles}</div>${ed ? edBuy : txLine('buy')}${cu}</div>
           ${!ed && st.adv ? advHtml(mint, orders) : ''}
           <div class="sep"></div>
-          <div class="sec">${sellHead}<div class="g4">${sellTiles}</div>${ed ? edSell : txLine('sell')}</div></div>
+          <div class="sec ssell">${sellHead}<div class="g4">${sellTiles}</div>${ed ? edSell : txLine('sell')}</div></div>
         ${ed ? '<div class="eh mut sm">Tab → next value · Enter saves · Esc cancels · empty a slot to hide it. ◎ / $ / % each keep their own 8 values.</div>' : foot}`;
     }
 
@@ -1968,7 +2293,7 @@
           ${f('stagger', 'Stagger between wallets (ms)', st.stagger, 50)}${f('variance', 'Token split variance (%)', st.variance, 1)}</div>
         <span class="sm2">Hotkeys</span>
         <div class="sh"><span class="seg">${[['on', 'On'], ['hover', 'Hover only'], ['off', 'Off']].map(([k, l]) => `<button class="${st.hotkeys === k ? 'on' : ''}" data-hk="${k}">${l}</button>`).join('')}</span>${ck('kbHints', 'Key hints on buttons', st.kbHints)}</div>
-        <div class="keys mut sm"><span><kbd>1–8</kbd> buy</span><span><kbd>⇧1–8</kbd> sell</span><span><kbd>X</kbd> initials</span><span><kbd>U</kbd> unit</span><span><kbd>S</kbd> split</span><span><kbd>G</kbd> group</span><span><kbd>Alt+1–3</kbd> preset</span><span><kbd>D</kbd> dip</span><span><kbd>L</kbd> live</span><span><kbd>C</kbd> collapse</span><span><kbd>/</kbd> custom</span><span><kbd>Esc</kbd> close</span></div>
+        <div class="keys mut sm"><span><kbd>1–8</kbd> buy</span><span><kbd>⇧1–8</kbd> sell</span><span><kbd>X</kbd> initials</span><span><kbd>U</kbd> unit</span><span><kbd>S</kbd> split</span><span><kbd>G</kbd> group</span><span><kbd>Alt+1–3</kbd> preset</span><span><kbd>D</kbd> dip</span><span><kbd>L</kbd> live</span><span><kbd>C</kbd> collapse</span><span><kbd>B</kbd> holdings bar</span><span><kbd>/</kbd> custom</span><span><kbd>Esc</kbd> close</span></div>
         <span class="sm2">Alerts <span class="mut sm">(coins you hold · run by the backtester tab)</span></span>
         <div class="eg two">${ck('al.dev.on', 'Dev sells', A.dev.on)}${f('al.dev.pct', 'when ≥ % of supply', A.dev.pct, 0.5)}
           ${ck('al.dev.auto', 'Auto-sell 100% on a dev sell', A.dev.auto)}<span></span>
@@ -1979,6 +2304,13 @@
         <span class="sm2">Size & GMGN cards</span>
         <div class="eg two">${f('scalePct', 'Size % (or drag the corner)', Math.round((Number(st.scale) || 1) * 100), 5)}${ck('autoFit', 'Auto-fit screen height', st.autoFit)}
           ${f('qb', 'Card quick buy (◎)', st.qb, 0.01)}${ck('cards', 'Holdings + quick buy on cards', st.cards)}</div>
+        <span class="sm2">Layout</span>
+        <div class="sh"><span class="seg">${[[380, 'Tall'], [720, 'Wide · 2 columns']].map(([w, l]) => `<button class="${(wideOn() ? 720 : 380) === w ? 'on' : ''}" data-lw="${w}">${l}</button>`).join('')}</span><span class="mut sm">or drag the right edge</span></div>
+        <span class="sm2">Holdings bar</span>
+        <div class="eg two">${ck('bar', 'Show holdings at the top', st.bar && !st.barHidden)}${ck('barOneClick', 'One-click ⚡ 100% (no confirm)', st.barOneClick)}${env === 'ag' ? ck('barOnAg', 'Also on the backtester', st.barOnAg) : ''}</div>
+        <span class="sm2">AG Intel</span>
+        <div class="eg two">${ck('intelOn', 'Intel panel on coin pages', st.intel.on)}${ck('cardIntel', 'AG risk pill + peek on cards', st.cardIntel)}
+          <span class="mut sm">${(st.hiddenCoins || []).length} coin(s) hidden from lists</span>${(st.hiddenCoins || []).length ? '<button class="btn sm" data-a="unhide">Unhide all</button>' : '<span></span>'}</div>
         <button class="btn wide" data-a="pushtx">Apply P${st.preset + 1} tx settings to my ${st.mode} AG wallets</button>
         <div class="mut sm">AG stores slippage / fee / MEV per wallet, not per order, so this updates the wallets themselves (the AG bot uses them too).</div></div>`;
     }
@@ -2020,6 +2352,7 @@
       if (d.pinit) return sellInit(d.pinit);
       if (d.ps) { ui.posSort = d.ps; return render(); }
       if (d.hk) { st.hotkeys = d.hk; save(); return render(); }
+      if (d.lw) { setW(Number(d.lw)); save(); return render(); }
       if (d.tt) { ui.tf.tab = d.tt; ui.tf.target = ''; return render(); }
       if (d.tq) {
         const mc = mcapNow(getMint());
@@ -2057,6 +2390,11 @@
       }
       switch (a) {
         case 'panelx': ui.panel = null; return render();
+        case 'intel': st.intel.open = !st.intel.open; save(); if (st.intel.open) loadIntel(getMint()); return render();
+        case 'intelr': loadIntel(getMint(), true); return;
+        case 'imore': ui.imore = !ui.imore; return render();
+        case 'idip': { const mc = mcapNow(getMint()); ui.panel = 'trig'; ui.tf.tab = 'dip'; if (mc) ui.tf.target = kfmt(mc * 0.7); return render(); }
+        case 'unhide': st.hiddenCoins = []; save(); scanCards(); toast('All hidden coins are back'); return render();
         case 'mode': return toggleMode();
         case 'col': ui.collapsed = !ui.collapsed; savePos(); if (!ui.collapsed) loadPos(); return render();
         case 'edit': return startEdit();
@@ -2128,6 +2466,11 @@
       else if (d.s === 'stratId') { st.stratId = tv || null; ui.stratEdit = null; }
       else if (d.s === 'shareHide') { ui.shareHide = ch; return render(); }
       else if (d.s === 'kbHints') st.kbHints = ch;
+      else if (d.s === 'bar') { st.bar = ch; st.barHidden = false; }
+      else if (d.s === 'barOneClick') st.barOneClick = ch;
+      else if (d.s === 'barOnAg') st.barOnAg = ch;
+      else if (d.s === 'intelOn') { st.intel.on = ch; if (ch) loadIntel(getMint()); }
+      else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
       else if (d.s === 'confirmAbove') st.confirmAbove = v || 0;
       else if (d.s === 'qb') st.qb = Math.max(0, v || 0);
@@ -2397,6 +2740,7 @@
         case 'd': ui.panel = 'trig'; ui.tf.tab = 'dip'; render(); break;
         case 'l': toggleMode(); break;
         case 'c': ui.collapsed = !ui.collapsed; savePos(); render(); break;
+        case 'b': st.barHidden = !st.barHidden; save(); renderBar(); break;
         case '/': { if (ui.collapsed) { ui.collapsed = false; render0(); } const i = el.querySelector('[data-a=camt]'); if (i) i.focus(); break; }
         case 'escape': if (ui.panel) { ui.panel = null; render(); } else done = false; break;
         default: done = false;
@@ -2406,7 +2750,7 @@
 
     function mountW() {
       if (document.getElementById('agtw')) return;
-      const s = document.createElement('style'); const ti = CSS.indexOf('.agtw-toast'); s.textContent = `#agtw{--k:1px}` + scalePx(CSS.slice(0, ti)) + CSS.slice(ti); document.head.appendChild(s);
+      const s = document.createElement('style'); const ti = CSS.indexOf('.agtw-toast'); s.textContent = `#agtw{--k:1px;--w:380}` + scalePx(CSS.slice(0, ti)) + CSS.slice(ti); document.head.appendChild(s);
       try { const f = document.createElement('link'); f.rel = 'stylesheet'; f.href = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap'; document.head.appendChild(f); } catch (_) {}
       el = document.createElement('div'); el.id = 'agtw';
       el.style.left = (pos0.x ?? 20) + 'px';
@@ -2436,8 +2780,17 @@
       });
       setK(Math.min(1.8, Math.max(0.7, Number(st.scale) || 1)));
       window.addEventListener('resize', () => fit());
-      el.addEventListener('dblclick', (e) => { if (e.target.closest('.rz')) { st.scale = 1; save(); setK(1); fit(); } });
+      el.addEventListener('dblclick', (e) => { if (e.target.closest('.rz')) { st.scale = 1; save(); setK(1); fit(); } if (e.target.closest('.rw')) { setW(380); save(); fit(); } });
+      setW(Number(st.w) || 380);
       el.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.rw')) { // width: more room → 2-column layout (≥ 600 at 100%)
+          e.preventDefault();
+          const sx = e.clientX, sw = Number(st.w) || 380, h = e.target.closest('.rw'); h.classList.add('on');
+          const mv = (ev) => setW(sw + (ev.clientX - sx) / curK);
+          const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); h.classList.remove('on'); save(); fit(); toast(wideOn() ? `Wide layout · ${st.w}px` : `Width ${st.w}px`); };
+          document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+          return;
+        }
         if (e.target.closest('.rz')) { // resize: scale the whole widget proportionally
           e.preventDefault();
           const sx = e.clientX, sw = el.offsetWidth, sk = curK;
@@ -2483,6 +2836,7 @@
       try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0 }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
+      setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s
       const prevSold = {};
       for (const o of loadOrders()) prevSold[o.id] = Object.values(o.state || {}).filter((x) => x.sold && x.sold !== 'skip').length;
       GM_addValueChangeListener('twOrders', (_k, _o, v, remote) => {
@@ -2498,6 +2852,7 @@
       GM_addValueChangeListener('tw', (_k, _o, v, remote) => {
         if (!remote || !v) return;
         st.groups = Array.isArray(v.groups) ? v.groups : st.groups; st.buyMode = v.buyMode || st.buyMode;
+        if (v.w && v.w !== st.w) setW(v.w);
         if (v.mode === st.mode && v.wallets) st.wallets = Object.assign(st.wallets, v.wallets);
         render(); scanCards();
       });
