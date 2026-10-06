@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.5.0
+// @version      3.5.1
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester and on GMGN.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
 // @match        https://*.gmgn.ai/*
+// @homepageURL  https://github.com/roman-t3a/ag-trade-widget
+// @supportURL   https://github.com/roman-t3a/ag-trade-widget/issues
+// @updateURL    https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
+// @downloadURL  https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -14,13 +18,255 @@
 // @grant        GM_openInTab
 // @grant        unsafeWindow
 // @connect      backtester.alphagardeners.xyz
-// @require      https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js
+// @require      https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js#sha256=c+uha8iV/fpFTifsuA3vMe3o2GH5nhdf+TsRDqvsBE8=
 // ==/UserScript==
 
 (function () {
   'use strict';
-  const MINT_RE = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
-  const VER = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '3.5.0';
+
+  // ============================================================ core
+  // Pure helpers: no DOM, no GM_*, no widget state. The widget below uses them, and the unit tests load this
+  // same file in Node (see the export right after this block). Keep everything in here side-effect free.
+  const Core = (() => {
+    const num = (...v) => { for (const x of v) if (x != null && x !== '' && !isNaN(Number(x))) return Number(x); return null; };
+    const escH = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const tail = (a) => (a ? a.slice(0, 4) + '…' + a.slice(-4) : '');
+    const sol = (v) => (v == null || isNaN(v) ? '--' : (Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3)));
+    const kfmt = (v) => (v == null || isNaN(v) ? '--' : Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
+      : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(Math.abs(v) >= 1e5 ? 0 : 1) + 'K' : v.toFixed(Math.abs(v) >= 10 ? 0 : 2));
+    const usdV = (v) => (v == null || isNaN(v) ? '' : (v < 0 ? '-' : '') + '$' + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(2) + 'M'
+      : Math.abs(v) >= 1e4 ? (Math.abs(v) / 1e3).toFixed(1) + 'K' : Math.abs(v).toFixed(2)));
+    const unitLab = (a, unit) => (unit === 'pct' ? a + '%' : unit === 'usd' ? '$' + (a >= 1000 ? a / 1000 + 'K' : a) : String(a));
+    const fmtM = (v, u) => (v == null ? '--' : u === '%' ? (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)) + '%' : u === '$' ? '$' + kfmt(v) : Math.abs(v) >= 1000 ? kfmt(v) : String(Math.round(v * 100) / 100));
+    const agoS = (ms) => (ms == null || ms < 0 ? '--' : ms < 1000 ? '<1s' : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's' : ms < 3600e3 ? Math.round(ms / 60000) + 'm' : Math.round(ms / 3600e3) + 'h');
+    const msS = (ms) => (ms == null ? '--' : Math.round(ms) + 'ms');
+    // "$6.97K" / "PUMPKART ↑ $76.62K | GMGN.AI" → 6970 / 76620
+    const parseUsd = (t) => { const m = String(t || '').match(/\$\s?([\d.,]+)\s?([KMB])?/i); if (!m) return null; const v = parseFloat(m[1].replace(/,/g, '')); return v * ({ K: 1e3, M: 1e6, B: 1e9 }[(m[2] || '').toUpperCase()] || 1); };
+    // user input "12.5k" / "$1.2M" / "800" → number (NaN when not a market cap)
+    const parseMc = (s) => { const m = String(s || '').replace(/[$,\s]/g, '').match(/^(\d*\.?\d+)([kmb])?$/i); return m ? Number(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1) : NaN; };
+    // CSS px → px × --k (the widget's size factor); negative values included
+    const scalePx = (css) => css.replace(/(-?\d*\.?\d+)px/g, (_m, n) => `calc(${n} * var(--k))`);
+
+    // ---- pump.fun bonding curve: virtual reserves 30 SOL × 1.073B tokens, constant product, ~1.25% fee
+    const PUMP = { K: 30 * 1.073e9, SUPPLY: 1e9, CURVE_END_MCAP_SOL: 400, FEE: 1.0125 };
+    const isPump = (mint) => /pump$/i.test(mint || '');
+    // SOL needed to buy pct% of the supply at market cap mcapUsd (USD), SOL at solUsd. Migrated / other coins:
+    // mcap × % (no pool depth known → the real cost is a bit higher).
+    function supplyCost(pct, mint, mcapUsd, solUsd) {
+      if (!(mcapUsd > 0) || !(solUsd > 0) || !(pct > 0)) return null;
+      const mSol = mcapUsd / solUsd, dy = (pct / 100) * PUMP.SUPPLY, p = mSol / PUMP.SUPPLY;
+      if (isPump(mint) && mSol < PUMP.CURVE_END_MCAP_SOL) {
+        const x = Math.sqrt(PUMP.K * p), y = Math.sqrt(PUMP.K / p);
+        if (dy < y * 0.98) return { sol: ((x * dy) / (y - dy)) * PUMP.FEE, curve: true, mSol, mu: mcapUsd };
+      }
+      return { sol: (mSol * pct) / 100, curve: false, mSol, mu: mcapUsd };
+    }
+    // price impact (%) of a buy of totalSol on the curve, and the average fill market cap (USD)
+    function buyImpact(totalSol, mint, mcapUsd, solUsd) {
+      if (!(totalSol > 0) || !(mcapUsd > 0) || !(solUsd > 0) || !isPump(mint)) return null;
+      const mSol = mcapUsd / solUsd;
+      if (mSol >= PUMP.CURVE_END_MCAP_SOL) return null;
+      const x = Math.sqrt((PUMP.K * mSol) / PUMP.SUPPLY), y = PUMP.K / x, dx = totalSol / PUMP.FEE, dy = y - PUMP.K / (x + dx);
+      return { impact: (((x + dx) / x) ** 2 - 1) * 100, avgMc: dy > 0 ? (dx / dy) * PUMP.SUPPLY * solUsd : null };
+    }
+    // bonding-curve progress 0–100 (virtual SOL 30 → ~115), 100 once past the migration market cap
+    function curvePct(mint, mcapUsd, solUsd) {
+      if (!mint || !isPump(mint) || !(mcapUsd > 0) || !(solUsd > 0)) return null;
+      const mSol = mcapUsd / solUsd;
+      if (mSol >= PUMP.CURVE_END_MCAP_SOL) return 100;
+      return Math.max(0, Math.min(100, ((Math.sqrt((PUMP.K * mSol) / PUMP.SUPPLY) - 30) / 85) * 100));
+    }
+    // AG feed values come in unknown units (USD mcap, SOL mcap, price…): the multiplier that brings v closest
+    // to the reference mcap, or null if nothing lands within 3×
+    function pickUnit(v, ref, solUsd) {
+      if (!(v > 0) || !(ref > 0)) return null;
+      let best = null, bd = Infinity;
+      for (const m of [1, solUsd || 0, PUMP.SUPPLY, PUMP.SUPPLY * (solUsd || 0)]) if (m > 0) { const d = Math.abs(Math.log((v * m) / ref)); if (d < bd) { bd = d; best = m; } }
+      return bd > Math.log(3) ? null : best;
+    }
+
+    // ---- multi-wallet buys (GMGN / Axiom conventions)
+    //  each  → every wallet buys `amount`          split → `amount` is the total, divided across wallets
+    //  jitter → ±% random size per wallet (split keeps the exact total) so the buys don't look bundled
+    //  wallets whose known balance can't cover their leg + the fee reserve are skipped (split re-divides)
+    function buyLegs(amount, ws, { split = false, jitterPct = 0, reserve = 0, balOf = () => null, shuffle = false, rand = Math.random } = {}) {
+      const j = Math.min(0.5, Math.max(0, Number(jitterPct) || 0) / 100);
+      const rsv = Math.max(0, Number(reserve) || 0);
+      let elig = ws.slice();
+      for (let pass = 0; pass < 4 && elig.length; pass++) {
+        const base = split ? amount / elig.length : amount;
+        const next = elig.filter((w) => { const b = balOf(w); return b == null || b >= base * (1 + j) + rsv; });
+        if (next.length === elig.length) break;
+        elig = next;
+      }
+      const skipped = ws.filter((w) => !elig.includes(w));
+      if (!elig.length) return { legs: [], skipped };
+      const base = split ? amount / elig.length : amount;
+      let amts = elig.map(() => base * (1 + (rand() * 2 - 1) * j));
+      if (split && j) { const s = amts.reduce((a, b) => a + b, 0); amts = amts.map((a) => (a * amount) / s); }
+      amts = amts.map((a) => Math.max(0.0001, Math.floor(a * 1e4) / 1e4));
+      const legs = elig.map((w, i) => ({ w, amt: amts[i] }));
+      if (shuffle) legs.sort(() => rand() - 0.5); // random order when staggering
+      return { legs, skipped };
+    }
+    const scaleLegs = (legs, total) => { const s = legs.reduce((a, x) => a + x.amt, 0); return s > 0 ? legs.map((x) => ({ w: x.w, amt: Math.max(0.0001, Math.floor(((x.amt * total) / s) * 1e4) / 1e4) })) : legs; };
+    // seeded PRNG (Park–Miller) for reproducible split plans
+    function rng(seed) { let x = (seed % 2147483646) + 1; return () => ((x = (x * 16807) % 2147483647) / 2147483647); }
+    // transfers that move balances from `have` to `want`: greedy, biggest donor → biggest receiver, nothing below MIN
+    function matchFlows(ws, have, want, MIN) {
+      const don = ws.filter((w) => have[w] - want[w] >= MIN).map((w) => ({ w, x: have[w] - want[w] })).sort((a, b) => b.x - a.x);
+      const rec = ws.filter((w) => want[w] - have[w] >= MIN).map((w) => ({ w, x: want[w] - have[w] })).sort((a, b) => b.x - a.x);
+      const tx = [];
+      let i = 0, k = 0;
+      while (i < don.length && k < rec.length) {
+        const a = Math.min(don[i].x, rec[k].x);
+        if (a >= MIN) tx.push({ from: don[i].w, to: rec[k].w, amt: a });
+        don[i].x -= a; rec[k].x -= a;
+        if (don[i].x < MIN) i++;
+        if (rec[k].x < MIN) k++;
+      }
+      return tx;
+    }
+
+    // ---- AG holdings rows: {worthSol, pnlSol, …}; cost of what is still held = worth − pnl
+    const bagCost = (h) => { const w = num(h.worthSol), p = num(h.pnlSol); return w != null && p != null ? w - p : null; };
+    const costOf = (h) => num(h.costSol, h.boughtSol) ?? bagCost(h);
+    const soldOf = (h) => num(h.proceedsSol, h.soldSol);
+    // cost-weighted average entry market cap of holding rows (useWorth: fall back to the current worth as weight)
+    function avgEntry(rows, useWorth) {
+      let eW = 0, eS = 0;
+      for (const h of rows) { const m = num(h.avgEntryMcap), c = costOf(h) || (useWorth ? num(h.worthSol) : 0) || 0; if (m > 0 && c > 0) { eW += m * c; eS += c; } }
+      return eS ? eW / eS : null;
+    }
+
+    // ---- AG intel
+    const metric = (o, k) => { if (!o) return null; const v = o[k]; return v == null || v === '' ? null : typeof v === 'object' ? num(v.value, v.v, v.now) : num(v); };
+    const metricsOf = (p) => (p && (p.metrics || p.currentMetrics)) || {};
+    const firstOf = (p) => (p && (p.firstMetrics || p.signalMetrics)) || {};
+    // def = [key, label, unit, direction (+1 higher is worse, -1 higher is better, 0 neutral), watch, risk]
+    function riskLevel(def, v) {
+      const [, , , dir, w, r] = def;
+      if (v == null || !dir) return 'n';
+      if (dir > 0) return v >= r ? 'bad' : v >= w ? 'mid' : 'ok';
+      return v > w ? 'ok' : 'mid';
+    }
+    // last 5 minutes of swaps → 1-minute buy / sell bins, smart-money counts, fresh buyers, net SOL
+    function flowOf(swaps, nowSec) {
+      const now = nowSec ?? Date.now() / 1000, bins = [0, 1, 2, 3, 4].map(() => ({ b: 0, s: 0 }));
+      let smB = 0, smS = 0, fresh = 0, net = 0;
+      for (const s of swaps || []) {
+        const t = num(s.blockTime, s.timestamp), v = num(s.solAmount, s.amountSol) || 0;
+        if (!t || now - t > 300 || now - t < -30) continue;
+        const i = Math.min(4, Math.max(0, 4 - Math.floor((now - t) / 60))), buy = s.side === 'buy';
+        bins[i][buy ? 'b' : 's'] += v; net += buy ? v : -v;
+        if (s.isSmartMoney || s.walletType === 2) { if (buy) smB++; else smS++; }
+        if (buy && s.walletType === 1 && !s.isSmartMoney) fresh++;
+      }
+      return { bins, smB, smS, fresh, net };
+    }
+    const PROFILE_KEYS = [[/fresh/i, 'Fresh'], [/dev.*hold|creator.*hold/i, 'Dev hold'], [/bundl/i, 'Bundled'], [/top.?10|top.*holder/i, 'Top-10'], [/smart/i, 'Smart money'], [/win.?pred/i, 'Win pred'], [/sniper/i, 'Snipers'], [/insider/i, 'Insiders']];
+    // any AG profile payload → up to 8 chips {k, v} (searched 3 levels deep, first match per label wins)
+    function profileChips(j) {
+      const out = [], seen = new Set();
+      const walk = (o, depth) => {
+        if (!o || typeof o !== 'object' || depth > 2) return;
+        for (const [k, v] of Object.entries(o)) {
+          if (v && typeof v === 'object') { walk(v, depth + 1); continue; }
+          const hit = PROFILE_KEYS.find(([re]) => re.test(k));
+          if (!hit || seen.has(hit[1]) || v == null || v === '' || typeof v === 'boolean') continue;
+          const n = Number(v);
+          if (!isFinite(n)) continue;
+          seen.add(hit[1]);
+          const pct = /pct|percent|share|ratio/i.test(k) || (n > 0 && n < 1 && !/count|num/i.test(k));
+          out.push({ k: hit[1], v: pct ? (n <= 1 && !/pct|percent/i.test(k) ? n * 100 : n).toFixed(1) + '%' : String(Math.round(n * 100) / 100) });
+        }
+      };
+      walk(j, 0);
+      return out;
+    }
+    // AG my-trades / swaps payloads → [{side, sol, mc, w, t (ms)}] oldest first
+    function tradeRows(j) {
+      const arr = j && (j.trades || j.swaps || j.items || j.history || j.fills);
+      if (!Array.isArray(arr)) return null;
+      return arr.map((t) => {
+        const ts = num(t.blockTime, t.timestamp, t.time, t.ts) || (t.at || t.createdAt ? new Date(t.at || t.createdAt).getTime() / 1000 : null);
+        return { side: String(t.side || t.type || '').toLowerCase().includes('sell') ? 'SELL' : 'BUY', sol: num(t.solAmount, t.amountSol, t.sol, t.amount), mc: num(t.mcap, t.mcapUsd, t.marketCap, t.mcapAtTrade),
+          w: t.walletAddress || t.wallet || t.walletKey || '', t: ts ? ts * (ts < 1e12 ? 1000 : 1) : null };
+      }).sort((a, b) => (a.t || 0) - (b.t || 0));
+    }
+    // signal time in ms from any of AG's field names (seconds or ms, number or ISO string)
+    const sigTime = (x) => { const v = num(x && (x.signalAt ?? x.createdAt ?? x.blockTime ?? x.time ?? x.timestamp ?? x.ts)); return v == null ? (typeof (x && x.createdAt) === 'string' ? Date.parse(x.createdAt) || null : null) : v < 1e12 ? v * 1000 : v; };
+    // Did AG signal a hidden coin after it was hidden? meta = { t: hidden at (ms), n: untimed signals known }.
+    // Timed signals decide on their own; untimed ones by count. The first look sets the baseline (meta.n).
+    function newSignal(meta, sigs, prof) {
+      const after = (t) => t != null && meta.t && t > meta.t + 1000;
+      if (sigs.some((x) => after(sigTime(x)))) return { hit: true };
+      if (prof && after(sigTime({ signalAt: prof.signalAt }))) return { hit: true };
+      const untimed = sigs.filter((x) => sigTime(x) == null).length;
+      if (meta.n == null) { meta.n = untimed; return { hit: false, baseline: true }; }
+      return { hit: untimed > meta.n };
+    }
+
+    // ---- relay (GMGN tab ⇄ backtester tab)
+    // Only these AG endpoints may be called, through the relay or directly.
+    function agPathAllowed(method, path) {
+      return /^(GET|POST)$/.test(method) &&
+        /^\/api\/(tokens\/[1-9A-HJ-NP-Za-km-z]{32,44}\/(buy|sell|profile|my-trades|annotations|tpsl|creator-holdings|recent-swaps)|swaps\/by-token\/[1-9A-HJ-NP-Za-km-z]{32,44}|performance\/(wallets-list|holdings|positions|wallets\/tx-settings-all))(\?[\w=&.-]*)?$/.test(path);
+    }
+    // v2 = a 3.5+ relay owner is alive · legacy = only the old heartbeat · down = no backtester tab
+    function relayMode(owner, beatAt, now) {
+      if (owner && now - owner.at < 30000) return { mode: 'v2', o: owner, age: now - owner.at };
+      if (beatAt && now - beatAt < 30000) return { mode: 'legacy', age: now - beatAt };
+      return { mode: 'down', age: beatAt ? now - beatAt : null, o: owner };
+    }
+    // the session counts as expired only on a fresh (< 2 min) 401 / 403 from AG
+    const authExpired = (a, now) => !!a && !a.ok && (a.status === 401 || a.status === 403) && now - a.at < 120000;
+    const healthLevel = (items, action) => (items.some((x) => x.c === 'r') ? 'r' : items.some((x) => x.c === 'y') || (action && action.a === 'reload') ? 'y' : 'g');
+
+    // ---- shared request bus for read-only AG GETs: one in-flight request + a short cache per path, shared
+    // between scripts on the page through W.__agBus. maxAge per call; failures are cached ≤ 3s.
+    function agBus(W, fetchFn) {
+      try { const b = W.__agBus; if (b && b.v === 1 && typeof b.get === 'function') return b; } catch (_) { /* cross-origin window */ }
+      const cache = new Map();
+      let lat = 0;
+      const bus = {
+        v: 1,
+        get(path, maxAge) {
+          const now = Date.now(), e = cache.get(path);
+          if (e) {
+            if (e.p) return e.p;
+            if (now - e.at < (e.r && e.r.ok ? maxAge : Math.min(maxAge, 3000))) return Promise.resolve(e.r);
+          }
+          const ph = { at: 0, r: e && e.r, p: null };
+          ph.p = fetchFn(path, { credentials: 'same-origin' })
+            .then(async (r) => ({ status: r.status, ok: r.ok, j: await r.json().catch(() => ({})) }))
+            .catch((err) => ({ status: 0, ok: false, j: { error: String(err) } }))
+            .then((r) => {
+              const d = Date.now() - now; lat = lat ? lat * 0.7 + d * 0.3 : d;
+              if (cache.get(path) === ph) cache.set(path, { at: Date.now(), r, p: null }); // dropped meanwhile → don't cache stale data
+              if (cache.size > 300) cache.delete(cache.keys().next().value);
+              return r;
+            });
+          cache.set(path, ph);
+          return ph.p;
+        },
+        drop(prefix) { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
+        lat: () => lat,
+        // poll-interval multiplier: 1 when the API answers in <1.5s, up to 6 when it's very slow
+        slow: () => Math.max(1, Math.min(6, lat / 1500)),
+      };
+      try { W.__agBus = bus; } catch (_) { /* frozen window */ }
+      return bus;
+    }
+
+    return { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, isPump, supplyCost, buyImpact, curvePct, pickUnit,
+      buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
+      sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus };
+  })();
+  // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
+  if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
+  const { agBus, agPathAllowed } = Core;
+  const VER = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.0.0';
   const RELAY_LEASE = 9000;   // the backtester tab that owns the relay renews every 3s; a standby tab takes over after 9s
   const RELAY_MAX_AGE = 700;  // the relay only runs calls younger than this: the GMGN tab goes direct after 1.5s without an ack
   // Connection health shared inside a tab (the backtester tab fills it, the GMGN tab reads it via agPong / agHealth)
@@ -157,13 +403,11 @@
     (document.title.match(/^\$?([A-Za-z0-9]{1,15})\s/) || [])[1] || '';
   tradeWidget('ag', agMint, agSymbol, agLocalCall);
 
-  function agPathAllowed(method, path) {
-    return /^(GET|POST)$/.test(method) &&
-      /^\/api\/(tokens\/[1-9A-HJ-NP-Za-km-z]{32,44}\/(buy|sell|profile|my-trades|annotations|tpsl|creator-holdings|recent-swaps)|swaps\/by-token\/[1-9A-HJ-NP-Za-km-z]{32,44}|performance\/(wallets-list|holdings|positions|wallets\/tx-settings-all))(\?[\w=&.-]*)?$/.test(path);
-  }
 
   function tradeWidget(env, getMint, getSymbol, localCall) {
     const AG = 'https://backtester.alphagardeners.xyz';
+    const { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, bagCost, costOf, soldOf, avgEntry, rng, matchFlows, scaleLegs,
+      metric, metricsOf, firstOf, riskLevel, profileChips, tradeRows, sigTime } = Core;
     const DEF_PRESET = () => ({ buy: [0.01, 0.1, 0.5, 1, 0.25, 2, 5, 10], sell: [10, 25, 50, 100, 5, 15, 33, 75], sup: [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5], usd: [5, 10, 25, 50, 100, 250, 500, 1000], sellSol: [0.05, 0.1, 0.25, 0.5, 1, 2, 0, 0], slippage: 60, fee: 0.001, mev: 'JITO' });
     const st = Object.assign({ mode: 'paper', preset: 0, wallets: { live: [] }, confirmAbove: 2, presets: [DEF_PRESET(), DEF_PRESET(), DEF_PRESET()],
       migPct: 100, protect: { arm: 70, floor: 15, pct: 100 }, qb: 0.1, cards: true,
@@ -218,9 +462,6 @@
     const save = () => GM_setValue('tw', st);
     const savePos = () => GM_setValue('twPos_' + env, { x: el.offsetLeft, y: el.offsetTop, collapsed: ui.collapsed });
     const id = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
-    const escH = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const tail = (a) => (a ? a.slice(0, 4) + '…' + a.slice(-4) : '');
-    const sol = (v) => (v == null || isNaN(v) ? '--' : (Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3)));
     const P = () => { const p = st.presets[st.preset] || (st.presets[st.preset] = DEF_PRESET()); const d = DEF_PRESET(); for (const k of ['buy', 'sell', 'sup', 'usd', 'sellSol']) if (!Array.isArray(p[k])) p[k] = d[k]; return p; };
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const labelOf = (w) => (wallets.find((x) => x.address === w) || {}).label || tail(w);
@@ -253,12 +494,7 @@
       });
       GM_addValueChangeListener('agHealth', (_k, _o, v, remote) => { if (remote && v) hs.h = v; });
     }
-    const relayInfo = () => {
-      const o = GM_getValue('agRelayOwner', null), beatAt = GM_getValue('agRelayAt', 0) || 0, now = Date.now();
-      if (o && now - o.at < 30000) return { mode: 'v2', o, age: now - o.at };
-      if (now - beatAt < 30000) return { mode: 'legacy', age: now - beatAt }; // backtester tab still runs a pre-3.5 script
-      return { mode: 'down', age: beatAt ? now - beatAt : null, o };
-    };
+    const relayInfo = () => Core.relayMode(GM_getValue('agRelayOwner', null), GM_getValue('agRelayAt', 0) || 0, Date.now());
     function relay(calls, legacy) {
       return new Promise((res) => {
         const rid = id();
@@ -301,7 +537,7 @@
     // A buy / sell is refused up front when AG just told us the session is gone (instead of failing per wallet).
     function authBlock() {
       const a = env === 'ag' ? HL.sess : (hs.h && hs.h.sess && (!hs.auth || hs.h.sess.at > hs.auth.at) ? hs.h.sess : hs.auth);
-      return a && !a.ok && (a.status === 401 || a.status === 403) && Date.now() - a.at < 120000 ? `AG session expired (${a.status}): log in on the backtester, then retry` : '';
+      return Core.authExpired(a, Date.now()) ? `AG session expired (${a.status}): log in on the backtester, then retry` : '';
     }
 
     // ---------------------------------------------------------- data
@@ -354,12 +590,6 @@
       }
       render();
     }
-    const num = (...v) => { for (const x of v) if (x != null && x !== '' && !isNaN(Number(x))) return Number(x); return null; };
-    // AG holding rows carry {worthSol, worthUsd, pnlSol, pnlUsd, pnlPct, avgEntryMcap}: no explicit cost,
-    // so the cost of the bag a wallet still holds = worthSol − pnlSol.
-    const bagCost = (h) => { const w = num(h.worthSol), p = num(h.pnlSol); return w != null && p != null ? w - p : null; };
-    const costOf = (h) => num(h.costSol, h.boughtSol) ?? bagCost(h);
-    const soldOf = (h) => num(h.proceedsSol, h.soldSol);
     // Sell initials for one wallet: sell the SOL value that its current bag cost (= take the entry out, ride the rest free).
     function initPlan(h) {
       const worth = num(h.worthSol), cost = bagCost(h);
@@ -399,22 +629,11 @@
     // converted with AG's SOL/USD. Pump.fun coins still on the bonding curve are priced on the curve itself
     // (virtual reserves 30 SOL × 1.073B tokens, constant product, ~1.25% fee), so big % buys include their
     // own price impact. Migrated / other coins: mcap × % (no pool depth known → real cost is a bit higher).
-    const PUMP_K = 30 * 1.073e9, SUPPLY = 1e9, CURVE_END_MCAP_SOL = 400, PUMP_FEE = 1.0125;
-    const parseUsd = (t) => { const m = String(t || '').match(/\$\s?([\d.,]+)\s?([KMB])?/i); if (!m) return null; const v = parseFloat(m[1].replace(/,/g, '')); return v * ({ K: 1e3, M: 1e6, B: 1e9 }[(m[2] || '').toUpperCase()] || 1); };
     function mcapUsd(mint) {
       if (env === 'ag' && lastRow && lastRow.tokenAddress === mint) { const v = num(lastRow.currentMcap, lastRow.mcap, lastRow.signalMcap); if (v > 0) return v; }
       return env === 'ag' ? null : parseUsd(document.title);
     }
-    function supplyCost(pct, mint) {
-      const mu = mcapNow(mint);
-      if (!(mu > 0) || !(usdRate > 0) || !(pct > 0)) return null;
-      const mSol = mu / usdRate, dy = (pct / 100) * SUPPLY, p = mSol / SUPPLY;
-      if (/pump$/i.test(mint) && mSol < CURVE_END_MCAP_SOL) {
-        const x = Math.sqrt(PUMP_K * p), y = Math.sqrt(PUMP_K / p);
-        if (dy < y * 0.98) return { sol: ((x * dy) / (y - dy)) * PUMP_FEE, curve: true, mSol, mu };
-      }
-      return { sol: (mSol * pct) / 100, curve: false, mSol, mu };
-    }
+    const supplyCost = (pct, mint) => Core.supplyCost(pct, mint, mcapNow(mint), usdRate);
     // % mode: "each" → every wallet gets pct% (priced as one combined buy, then divided); "split" → pct% in total.
     function pctWallets() { return st.mode === 'live' ? Math.max(1, buySel().length) : 1; }
     function pctToSol(pct, mint) {
@@ -489,10 +708,8 @@
         const k = ev + ':' + f;
         let mul = unitPick[k];
         if (mul == null) {
-          if (!(ref > 0)) continue; // wait for a reference before trusting an unknown unit
-          let best = null, bd = Infinity;
-          for (const m of [1, usdRate || 0, SUPPLY, SUPPLY * (usdRate || 0)]) if (m > 0) { const dd = Math.abs(Math.log((v * m) / ref)); if (dd < bd) { bd = dd; best = m; } }
-          if (bd > Math.log(3)) continue;
+          const best = Core.pickUnit(v, ref, usdRate); // waits for a reference before trusting an unknown unit
+          if (best == null) continue;
           mul = unitPick[k] = best;
           if (DEBUG) console.log('[AG widget] unit for', k, '=', best);
         }
@@ -575,31 +792,10 @@
       setTimeout(loadPos, 2500); setTimeout(loadPos, 8000); setTimeout(loadHeld, 3000);
       return ok;
     }
-    // Multi-wallet buy legs (GMGN / Axiom conventions):
-    //  each  → every wallet buys `amount`          split → `amount` is the total, divided across wallets
-    //  jitter → ±% random size per wallet (split keeps the exact total) so the buys don't look bundled
-    //  wallets whose known balance can't cover their leg + the fee reserve are skipped (split re-divides)
-    function buyLegs(amount, ws, split, jitterPct) {
-      const j = Math.min(0.5, Math.max(0, Number(jitterPct) || 0) / 100);
-      const reserve = Math.max(0, Number(st.reserve) || 0);
-      let elig = ws.slice();
-      for (let pass = 0; pass < 4 && elig.length; pass++) {
-        const base = split ? amount / elig.length : amount;
-        const next = elig.filter((w) => { const b = balOf(w); return b == null || b >= base * (1 + j) + reserve; });
-        if (next.length === elig.length) break;
-        elig = next;
-      }
-      const skipped = ws.filter((w) => !elig.includes(w)).map((w) => `${labelOf(w)} (${sol(balOf(w))}◎)`);
-      if (!elig.length) return { legs: [], skipped };
-      const base = split ? amount / elig.length : amount;
-      let amts = elig.map(() => base * (1 + (Math.random() * 2 - 1) * j));
-      if (split && j) { const s = amts.reduce((a, b) => a + b, 0); amts = amts.map((a) => (a * amount) / s); }
-      amts = amts.map((a) => Math.max(0.0001, Math.floor(a * 1e4) / 1e4));
-      const legs = elig.map((w, i) => ({ w, amt: amts[i] }));
-      if (Number(st.stagger) > 0) legs.sort(() => Math.random() - 0.5); // random order when staggering
-      return { legs, skipped };
+    function buyLegs(amount, ws, split, jitterPct) { // rules: Core.buyLegs
+      const r = Core.buyLegs(amount, ws, { split, jitterPct, reserve: st.reserve, balOf, shuffle: Number(st.stagger) > 0 });
+      return { legs: r.legs, skipped: r.skipped.map((w) => `${labelOf(w)} (${sol(balOf(w))}◎)`) };
     }
-    const scaleLegs = (legs, total) => { const s = legs.reduce((a, x) => a + x.amt, 0); return s > 0 ? legs.map((x) => ({ w: x.w, amt: Math.max(0.0001, Math.floor(((x.amt * total) / s) * 1e4) / 1e4) })) : legs; };
 
     // ---------------------------------------------------------- safety rails (LIVE)
     const SF = () => Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
@@ -623,15 +819,7 @@
       const h = heldAll[mint];
       return h ? Math.max(0, h.worth - h.pnl) : 0;
     }
-    // pump.fun bonding curve: price impact of a buy (final price vs now) and the average fill market cap
-    function buyImpact(totalSol, mint) {
-      const mu = mcapNow(mint);
-      if (!(totalSol > 0) || !(mu > 0) || !(usdRate > 0) || !/pump$/i.test(mint)) return null;
-      const mSol = mu / usdRate;
-      if (mSol >= CURVE_END_MCAP_SOL) return null;
-      const x = Math.sqrt((PUMP_K * mSol) / SUPPLY), y = PUMP_K / x, dx = totalSol / PUMP_FEE, dy = y - PUMP_K / (x + dx);
-      return { impact: (((x + dx) / x) ** 2 - 1) * 100, avgMc: dy > 0 ? (dx / dy) * SUPPLY * usdRate : null };
-    }
+    const buyImpact = (totalSol, mint) => Core.buyImpact(totalSol, mint, mcapNow(mint), usdRate);
     const lastBuyAt = (mint) => (GM_getValue('twLastBuy', {}) || {})[mint] || 0;
     function markBuy(mint) { const m = GM_getValue('twLastBuy', {}) || {}; m[mint] = Date.now(); for (const k of Object.keys(m)) if (Date.now() - m[k] > 600e3) delete m[k]; GM_setValue('twLastBuy', m); }
 
@@ -883,21 +1071,6 @@
       solEven: () => 'Even out SOL between the selected wallets',
       solCons: () => `Sweep SOL into one wallet (keeping ${st.reserve} ◎ in each)`,
     };
-    function rng(seed) { let x = (seed % 2147483646) + 1; return () => ((x = (x * 16807) % 2147483647) / 2147483647); }
-    function matchFlows(ws, have, want, MIN) { // greedy: biggest donor → biggest receiver
-      const don = ws.filter((w) => have[w] - want[w] >= MIN).map((w) => ({ w, x: have[w] - want[w] })).sort((a, b) => b.x - a.x);
-      const rec = ws.filter((w) => want[w] - have[w] >= MIN).map((w) => ({ w, x: want[w] - have[w] })).sort((a, b) => b.x - a.x);
-      const tx = [];
-      let i = 0, k = 0;
-      while (i < don.length && k < rec.length) {
-        const a = Math.min(don[i].x, rec[k].x);
-        if (a >= MIN) tx.push({ from: don[i].w, to: rec[k].w, amt: a });
-        don[i].x -= a; rec[k].x -= a;
-        if (don[i].x < MIN) i++;
-        if (rec[k].x < MIN) k++;
-      }
-      return tx;
-    }
     function buildPlan() {
       const p = ui.plan;
       if (!p) return null;
@@ -1215,26 +1388,15 @@
     }
 
     // ---------------------------------------------------------- UI helpers
-    const kfmt = (v) => (v == null || isNaN(v) ? '--' : Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
-      : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(Math.abs(v) >= 1e5 ? 0 : 1) + 'K' : v.toFixed(Math.abs(v) >= 10 ? 0 : 2));
-    const usdV = (v) => (v == null || isNaN(v) ? '' : (v < 0 ? '-' : '') + '$' + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(2) + 'M'
-      : Math.abs(v) >= 1e4 ? (Math.abs(v) / 1e3).toFixed(1) + 'K' : Math.abs(v).toFixed(2)));
     const usdS = (solV) => (solV == null || !usdRate ? '' : usdV(solV * usdRate));
     // token amount ≈ value / price, price = mcap / 1B (pump.fun-style supply); shown with "≈"
     function tokEst(worthSol) {
       const mint = getMint(), mu = mint && mcapNow(mint);
       if (!(mu > 0) || !(usdRate > 0) || worthSol == null) return null;
-      return worthSol / (mu / usdRate / SUPPLY);
+      return worthSol / (mu / usdRate / PUMP.SUPPLY);
     }
     const tokFmt = (w) => { const t = tokEst(w); return t == null ? sol(w) + ' ◎' : '≈' + kfmt(t); };
-    function curvePct(mint) {
-      const mu = mcapNow(mint);
-      if (!mint || !/pump$/i.test(mint) || !(mu > 0) || !(usdRate > 0)) return null;
-      const mSol = mu / usdRate;
-      if (mSol >= CURVE_END_MCAP_SOL) return 100;
-      return Math.max(0, Math.min(100, ((Math.sqrt((PUMP_K * mSol) / SUPPLY) - 30) / 85) * 100)); // virtual SOL 30 → ~115
-    }
-    const unitLab = (a, unit) => (unit === 'pct' ? a + '%' : unit === 'usd' ? '$' + (a >= 1000 ? a / 1000 + 'K' : a) : String(a));
+    const curvePct = (mint) => Core.curvePct(mint, mcapNow(mint), usdRate);
     const ini = (w) => {
       const l = labelOf(w), m = l.match(/^([A-Za-z])[A-Za-z]*[\s_-]*(\d+)/);
       return (m ? m[1] + m[2] : l.replace(/[^A-Za-z0-9]/g, '').slice(0, 2)).toUpperCase().slice(0, 3) || '?';
@@ -1622,10 +1784,6 @@
         <span>${showSym ? `<b>${escH(o.sym)}</b> ` : ''}${escH(orderLabel(o))}${o.wallets ? ` <span class="mut">· ${o.wallets.length}w</span>` : ''}${o.mode === 'paper' ? ' <span class="mut">· paper</span>' : ''}</span>
         <span class="sp"></span><span class="n ${s.cls}">${escH(s.txt)}</span>${o.status === 'active' ? `<button class="xx" data-oc="${o.id}" aria-label="Cancel order">×</button>` : ''}</div>${bar}</div>`;
     }
-    function ordersPanel(all) {
-      const l = (all || loadOrders()).filter((o) => o.status === 'active');
-      return `<div class="olp"><div class="sh"><b>Active auto orders</b><span class="sp"></span><span class="mut sm">all tokens · hover a row for its log</span></div>${l.map((o) => oRow(o, true)).join('') || '<div class="mut">None.</div>'}</div>`;
-    }
 
     // ---------------------------------------------------------- AG Intel (docked panel on coin pages + card insight)
     // Sources (AG's own endpoints, same ones its token page uses):
@@ -1642,17 +1800,7 @@
       ['convincedWalletsCount', 'Convinced', ''], ['kycCount', 'KYC wallets', ''], ['dormantCount', 'Dormant', ''], ['drainedCount', 'Drained wallets', ''], ['fer', 'FER', ''], ['ttc', 'TTC', ''],
       ['deployerAge', 'Deployer age', ''], ['deployerBalance', 'Deployer ◎', ''], ['marketDepth', 'Market depth', ''], ['liquidity', 'Liquidity $', '$']];
     const intelCache = {}; // mint → { prof, creator, swaps, sigs, at, hist:[{t, holders}] }
-    const metric = (o, k) => { if (!o) return null; const v = o[k]; return v == null || v === '' ? null : typeof v === 'object' ? num(v.value, v.v, v.now) : num(v); };
-    const metricsOf = (p) => (p && (p.metrics || p.currentMetrics)) || {};
-    const firstOf = (p) => (p && (p.firstMetrics || p.signalMetrics)) || {};
-    function riskLevel(def, v) {
-      const [, , , dir, w, r] = def;
-      if (v == null || !dir) return 'n';
-      if (dir > 0) return v >= r ? 'bad' : v >= w ? 'mid' : 'ok';
-      return v > w ? 'ok' : v > r ? 'mid' : 'mid';
-    }
-    const fmtM = (v, u) => (v == null ? '--' : u === '%' ? (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)) + '%' : u === '$' ? '$' + kfmt(v) : Math.abs(v) >= 1000 ? kfmt(v) : String(Math.round(v * 100) / 100));
-    let intelBusy = {};
+    const intelBusy = {};
     async function loadIntel(mint, force) {
       if (!mint || intelBusy[mint]) return;
       const c = intelCache[mint] || (intelCache[mint] = { hist: [] });
@@ -1680,19 +1828,7 @@
       const first = num(p.firstSignalMcap, p.signalMcap), now = mcapNow(mint) || num(p.currentMcap), ath = Math.max(num(p.athMcap) || 0, now || 0) || null;
       return { p, M, F, first, now, ath, mult: first && now ? now / first : null, athMult: first && ath ? ath / first : null, signalAt: num(p.signalAt), win: num(p.winPredPercent, M.winPredPercent), score: metric(M, 'agScore') };
     }
-    function flowOf(swaps) {
-      const now = Date.now() / 1000, bins = [0, 1, 2, 3, 4].map(() => ({ b: 0, s: 0 }));
-      let smB = 0, smS = 0, fresh = 0, net = 0;
-      for (const s of swaps || []) {
-        const t = num(s.blockTime, s.timestamp), sol = num(s.solAmount, s.amountSol) || 0;
-        if (!t || now - t > 300 || now - t < -30) continue;
-        const i = Math.min(4, Math.max(0, 4 - Math.floor((now - t) / 60))), buy = s.side === 'buy';
-        bins[i][buy ? 'b' : 's'] += sol; net += buy ? sol : -sol;
-        if (s.isSmartMoney || s.walletType === 2) buy ? smB++ : smS++;
-        if (buy && s.walletType === 1 && !s.isSmartMoney) fresh++;
-      }
-      return { bins, smB, smS, fresh, net };
-    }
+    const flowOf = (swaps) => Core.flowOf(swaps);
     const lvC = { ok: '#8FE6B4', mid: '#FFE08A', bad: '#F59AA6', n: '#E6E8EC' }; // hex: also used on GMGN cards, outside the widget's CSS vars
     function intelHtml() {
       const mint = getMint();
@@ -1745,7 +1881,6 @@
     // ---------------------------------------------------------- hidden coins come back on a new AG signal
     // Hiding is often done before AG's signal lands. While a hidden coin is still listed on the page we poll its
     // AG signals (/api/swaps/by-token, = matches of your presets) every 20s; a signal newer than the hide → unhide.
-    const sigTime = (x) => { const v = num(x && (x.signalAt ?? x.createdAt ?? x.blockTime ?? x.time ?? x.timestamp ?? x.ts)); return v == null ? (typeof (x && x.createdAt) === 'string' ? Date.parse(x.createdAt) || null : null) : v < 1e12 ? v * 1000 : v; };
     function hideCoin(mint) {
       const c = intelCache[mint];
       st.hiddenCoins = [...new Set((st.hiddenCoins || []).concat(mint))].slice(-300);
@@ -1758,15 +1893,11 @@
       st.hiddenCoins = (st.hiddenCoins || []).filter((m) => m !== mint); delete st.hiddenMeta[mint]; save();
     }
     const hidChk = {}; let hidBusy = 0;
-    function newSignal(mint, sigs, prof) {
+    function newSignal(mint, sigs, prof) { // rules: Core.newSignal
       const m = st.hiddenMeta[mint] || (st.hiddenMeta[mint] = { t: 0, n: null }); // hidden before 3.4: no timestamp
-      const after = (t) => t != null && m.t && t > m.t + 1000;
-      if (sigs.some((x) => after(sigTime(x)))) return true;
-      if (prof && after(sigTime({ signalAt: prof.signalAt }))) return true;
-      // signals without a timestamp: compare how many there are with the count known at hide time
-      const untimed = sigs.filter((x) => sigTime(x) == null).length;
-      if (m.n == null) { m.n = untimed; save(); return false; } // first look: what is there now counts as known
-      return untimed > m.n;
+      const r = Core.newSignal(m, sigs, prof);
+      if (r.baseline) save();
+      return r.hit;
     }
     function watchHidden(mint) {
       if (!st.unhideOnSignal || env === 'ag' || hidBusy >= 2) return;
@@ -1853,7 +1984,7 @@
         if (c > 0 && em > 0) { a.eW += em * c; a.eS += c; }
       }
       for (const a of Object.values(m)) a.entry = a.eS ? a.eW / a.eS : null;
-      heldAll = m; held = m; heldAt = Date.now();
+      heldAll = m; held = m;
       if (env !== 'ag' && st.cards) scanCards();
       if (ui.panel === 'pos') render();
       renderBar();
@@ -2039,7 +2170,6 @@
     // ---------------------------------------------------------- size: every px in the CSS is k × px, so the whole widget
     // (fonts, buttons, spacing, icons in em) scales together. k = your size (corner grip), auto-reduced to fit the screen.
     let curK = 1;
-    const scalePx = (css) => css.replace(/(-?\d*\.?\d+)px/g, (_m, n) => `calc(${n} * var(--k))`);
     const wideOn = () => (Number(st.w) || 380) >= 600;
     function setW(w) { st.w = Math.round(Math.min(1000, Math.max(340, w))); if (el) { el.style.setProperty('--w', String(st.w)); el.classList.toggle('wide', !ui.collapsed && !ui.edit && wideOn()); } }
     function setK(k) { curK = k; if (el) el.style.setProperty('--k', k.toFixed(4) + 'px'); }
@@ -2312,9 +2442,7 @@
       const stat = (k, v, cls) => `<div class="sb"><span class="lb">${k}</span><span class="n v ${v ? cls || '' : ''}">${v == null ? '--' : '◎ ' + sol(v)}</span><span class="n u">${v == null ? '' : usdS(v)}</span></div>`;
       const unreal = pos ? Object.values(livePos()).reduce((a, h) => a + (num(h.pnlSol) || 0), 0) : null;
       const realized = trades && pnlS != null && unreal != null ? pnlS - unreal : null;
-      let eW = 0, eS = 0;
-      for (const [, h] of held) { const m = num(h.avgEntryMcap), c = costOf(h) || num(h.worthSol) || 0; if (m > 0 && c > 0) { eW += m * c; eS += c; } }
-      const entry = eS ? eW / eS : null;
+      const entry = avgEntry(held.map(([, h]) => h), true);
       const sgn = (v) => (v >= 0 ? '+' : '');
       const foot = `<div class="ft"><div class="g3s">${stat('HOLDING', sm ? sm.bal : null)}${stat('BOUGHT', sm ? sm.bought : null, 'up')}${stat('SOLD', sm ? sm.sold : null, 'dn')}<div class="sb" title="Average entry market cap of the open positions (cost-weighted, from AG)"><span class="lb">AVG ENTRY</span><span class="n v">${entry ? '$' + kfmt(entry) : '--'}</span><span class="n u ${entry && mu ? (mu >= entry ? 'up' : 'dn') : ''}">${entry && mu ? (mu / entry).toFixed(2) + '× now' : ''}</span></div></div>
         <div class="pc ${pnlS == null ? '' : pnlS >= 0 ? 'pos' : 'neg'}"><div><span class="lb">PNL${pnlS != null ? (lv ? ' <span class="lvt">● LIVE</span>' : posRef ? ` <span class="syn">· synced ${Math.max(0, Math.round((Date.now() - posRef.at) / 1000))}s ago</span>` : '') : ''}</span><div class="pv">
@@ -2377,7 +2505,7 @@
 
     function trigHtml(orders) {
       const mint = getMint(), f = ui.tf, mc = mint ? mcapNow(mint) : null, lv = isLive(mint);
-      const entry = (() => { let eW = 0, eS = 0; for (const [, h] of heldBy()) { const m = num(h.avgEntryMcap), c = costOf(h) || 0; if (m > 0 && c > 0) { eW += m * c; eS += c; } } return eS ? eW / eS : null; })();
+      const entry = avgEntry(heldBy().map(([, h]) => h));
       const tgt = parseMc(f.target);
       const tabs = [['dip', 'Dip buy'], ['tp', 'Take profit'], ['trail', 'Trailing'], ['dca', 'DCA']];
       const quick = f.tab === 'dip' ? [[-10, '−10%'], [-20, '−20%'], [-30, '−30%'], ['e', 'entry']] : [[50, '+50%'], [100, '+100%'], [200, '+200%'], ['e2', '2× entry']];
@@ -2456,8 +2584,6 @@
 
 
     // ---------------------------------------------------------- connection health: footbar + panel
-    const agoS = (ms) => (ms == null || ms < 0 ? '--' : ms < 1000 ? '<1s' : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's' : ms < 3600e3 ? Math.round(ms / 60000) + 'm' : Math.round(ms / 3600e3) + 'h');
-    const msS = (ms) => (ms == null ? '--' : Math.round(ms) + 'ms');
     hs.hist = { relay: [], ag: [] };
     const pushHist = (k, v) => { if (v == null) return; const a = hs.hist[k]; a.push(v); if (a.length > 24) a.shift(); };
     const activeOrders = () => loadOrders().filter((o) => o.status === 'active').length;
@@ -2476,7 +2602,7 @@
       const now = Date.now(), items = [], act = activeOrders(), a = authNow();
       const it = (k, v, c) => items.push({ k, v, c });
       let action = null;
-      const authBad = a && !a.ok && (a.status === 401 || a.status === 403) && now - a.at < 120000;
+      const authBad = Core.authExpired(a, now);
       if (env === 'ag') {
         const o = ownerNow();
         it('Relay', iOwn() ? 'this tab' : o ? 'standby' : 'claiming', iOwn() ? 'g' : o ? 'n' : 'y');
@@ -2503,7 +2629,7 @@
         else if (rs.s === 'asleep') action = { a: 'wake', l: 'Wake' };
         else if (rs.s === 'down' || rs.s === 'off') action = { a: 'open', l: 'Open AG' };
       }
-      const level = items.some((x) => x.c === 'r') ? 'r' : items.some((x) => x.c === 'y') || (action && action.a === 'reload') ? 'y' : 'g';
+      const level = Core.healthLevel(items, action);
       return { items, action, level };
     }
     function footbarHtml() {
@@ -2709,7 +2835,7 @@
       if (d.tt) { ui.tf.tab = d.tt; ui.tf.target = ''; return render(); }
       if (d.tq) {
         const mc = mcapNow(getMint());
-        let entry = null; { let eW = 0, eS = 0; for (const [, h] of heldBy()) { const m = num(h.avgEntryMcap), c = costOf(h) || 0; if (m > 0 && c > 0) { eW += m * c; eS += c; } } entry = eS ? eW / eS : null; }
+        const entry = avgEntry(heldBy().map(([, h]) => h));
         const v = d.tq === 'e' ? entry : d.tq === 'e2' ? entry && entry * 2 : mc && mc * (1 + Number(d.tq) / 100);
         if (v) { ui.tf.target = kfmt(v); render(); }
         return;
@@ -2876,7 +3002,6 @@
     }
 
     // ---------------------------------------------------------- small helpers
-    const parseMc = (s) => { const m = String(s || '').replace(/[$,\s]/g, '').match(/^(\d*\.?\d+)([kmb])?$/i); return m ? Number(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1) : NaN; };
     function openCoin(mint) {
       if (env === 'ag') location.hash = 'token/' + mint;
       else location.href = '/sol/token/' + mint;
@@ -2972,37 +3097,9 @@
     }
 
     // ---------------------------------------------------------- every position in the current mode (both tabs)
-    let heldAll = {}, heldAt = 0;
+    let heldAll = {};
     // ---------------------------------------------------------- coin info: AG profile chips + your trades
     let info = { mint: null, chips: null, trades: null, at: 0 };
-    const PROFILE_KEYS = [[/fresh/i, 'Fresh'], [/dev.*hold|creator.*hold/i, 'Dev hold'], [/bundl/i, 'Bundled'], [/top.?10|top.*holder/i, 'Top-10'], [/smart/i, 'Smart money'], [/win.?pred/i, 'Win pred'], [/sniper/i, 'Snipers'], [/insider/i, 'Insiders']];
-    function profileChips(j) {
-      const out = [], seen = new Set();
-      const walk = (o, depth) => {
-        if (!o || typeof o !== 'object' || depth > 2) return;
-        for (const [k, v] of Object.entries(o)) {
-          if (v && typeof v === 'object') { walk(v, depth + 1); continue; }
-          const hit = PROFILE_KEYS.find(([re]) => re.test(k));
-          if (!hit || seen.has(hit[1]) || v == null || v === '' || typeof v === 'boolean') continue;
-          const n = Number(v);
-          if (!isFinite(n)) continue;
-          seen.add(hit[1]);
-          const pct = /pct|percent|share|ratio/i.test(k) || (n > 0 && n < 1 && !/count|num/i.test(k));
-          out.push({ k: hit[1], v: pct ? (n <= 1 && !/pct|percent/i.test(k) ? n * 100 : n).toFixed(1) + '%' : String(Math.round(n * 100) / 100) });
-        }
-      };
-      walk(j, 0);
-      return out;
-    }
-    function tradeRows(j) {
-      const arr = j && (j.trades || j.swaps || j.items || j.history || j.fills);
-      if (!Array.isArray(arr)) return null;
-      return arr.map((t) => {
-        const ts = num(t.blockTime, t.timestamp, t.time, t.ts) || (t.at || t.createdAt ? new Date(t.at || t.createdAt).getTime() / 1000 : null);
-        return { side: String(t.side || t.type || '').toLowerCase().includes('sell') ? 'SELL' : 'BUY', sol: num(t.solAmount, t.amountSol, t.sol, t.amount), mc: num(t.mcap, t.mcapUsd, t.marketCap, t.mcapAtTrade),
-          w: t.walletAddress || t.wallet || t.walletKey || '', t: ts ? ts * (ts < 1e12 ? 1000 : 1) : null };
-      }).sort((a, b) => (a.t || 0) - (b.t || 0));
-    }
     async function loadInfo(force) {
       const mint = getMint();
       if (!mint || (!force && info.mint === mint && Date.now() - info.at < 30000)) return;
@@ -3020,11 +3117,9 @@
       const mint = getMint(), sm = summary();
       if (!mint || !sm || sm.pnl == null) return null;
       const held = heldBy();
-      let eW = 0, eS = 0;
-      for (const [, h] of held) { const m = num(h.avgEntryMcap), c = costOf(h) || 0; if (m > 0 && c > 0) { eW += m * c; eS += c; } }
       const tr = info.mint === mint && info.trades ? info.trades : null;
       const t0 = tr && tr.length ? tr[0].t : null;
-      return { sym: sym || tail(mint), pct: sm.pnl, sol: sm.pnlSol, usd: usdRate && sm.pnlSol != null ? sm.pnlSol * usdRate : null, entry: eS ? eW / eS : null,
+      return { sym: sym || tail(mint), pct: sm.pnl, sol: sm.pnlSol, usd: usdRate && sm.pnlSol != null ? sm.pnlSol * usdRate : null, entry: avgEntry(held.map(([, h]) => h)),
         now: mcapNow(mint), invested: sm.bought, wallets: Math.max(1, held.length), mins: t0 ? Math.round((Date.now() - t0) / 60000) : null };
     }
     function drawShare(d, hide) {
@@ -3221,37 +3316,4 @@
   // (AG Intel and AG Trade Widget define the same bus; whichever loads first owns it). If the page
   // can't be shared (different script worlds) each script simply gets its own copy.
   // Also tracks backend latency so pollers can slow down while the backtester API is struggling.
-  function agBus(W, fetchFn) {
-    try { const b = W.__agBus; if (b && b.v === 1 && typeof b.get === 'function') return b; } catch (_) {}
-    const cache = new Map();
-    let lat = 0;
-    const bus = {
-      v: 1,
-      get(path, maxAge) {
-        const now = Date.now(), e = cache.get(path);
-        if (e) {
-          if (e.p) return e.p;
-          if (now - e.at < (e.r && e.r.ok ? maxAge : Math.min(maxAge, 3000))) return Promise.resolve(e.r);
-        }
-        const ph = { at: 0, r: e && e.r, p: null };
-        ph.p = fetchFn(path, { credentials: 'same-origin' })
-          .then(async (r) => ({ status: r.status, ok: r.ok, j: await r.json().catch(() => ({})) }))
-          .catch((err) => ({ status: 0, ok: false, j: { error: String(err) } }))
-          .then((r) => {
-            const d = Date.now() - now; lat = lat ? lat * 0.7 + d * 0.3 : d;
-            if (cache.get(path) === ph) cache.set(path, { at: Date.now(), r, p: null }); // dropped meanwhile → don't cache stale data
-            if (cache.size > 300) cache.delete(cache.keys().next().value);
-            return r;
-          });
-        cache.set(path, ph);
-        return ph.p;
-      },
-      drop(prefix) { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
-      lat: () => lat,
-      // poll-interval multiplier: 1 when the API answers in <1.5s, up to 6 when it's very slow
-      slow: () => Math.max(1, Math.min(6, lat / 1500)),
-    };
-    try { W.__agBus = bus; } catch (_) {}
-    return bus;
-  }
 })();

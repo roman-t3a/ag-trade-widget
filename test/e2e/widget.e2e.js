@@ -1,12 +1,15 @@
-// AG Trade Widget – end-to-end test suite (Playwright + mocked AG backend + fake socket).
-// Run: npm i playwright && npx playwright install chromium && node ag-trade-widget.test.js [path/to/ag-trade-widget.user.js]
+/* global __gm, __gmL, __sockH, __emits, __fire, __relay */
+// AG Trade Widget – end-to-end tests: the real userscript in Chromium (Playwright) with GM_* shims, a fake
+// socket.io and a mocked AG backend. Run: npm run test:e2e  (or node test/e2e/widget.e2e.js [path/to/script])
 // Screenshots of every screen land in ./shots
-let pw; try { pw = require('playwright'); } catch (_) { pw = require('/opt/npm-tools/node_modules/playwright'); }
+const pw = require('playwright');
 const { chromium } = pw;
 const fs = require('fs');
 const path = require('path');
-const SCRIPT = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', 'ag-trade-widget.user.js'), 'utf8');
+const SCRIPT = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', '..', 'ag-trade-widget.user.js'), 'utf8');
 const OUT = path.join(__dirname, 'shots');
+const VER = (SCRIPT.match(/@version\s+(\S+)/) || [])[1]; // the script's own version (GM_info shim)
+const VRE = VER.replace(/\./g, '\\.');
 fs.mkdirSync(OUT, { recursive: true });
 const MINT = 'pZguZriDrxLRimkew1MrWcJCZMLDwDndsRFWNAJpump', MINT2 = 'DabcatXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump';
 const W = ['Wmain11111111111111111111111111111111111111', 'Wsnip22222222222222222222222222222222222222', 'Wsnip33333333333333333333333333333333333333', 'Wbag444444444444444444444444444444444444444'];
@@ -71,8 +74,9 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
   });
   const url = pth || (env === 'ag' ? 'https://backtester.alphagardeners.xyz/#token/' + MINT : 'https://gmgn.ai/sol/token/' + MINT);
   await page.goto(url);
-  await page.evaluate(([tw, orders, env]) => {
+  await page.evaluate(([tw, orders, env, ver]) => {
     localStorage.setItem('agtwTest', '1');
+    window.GM_info = { script: { version: ver } }; window.__VER = ver;
     window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env === 'gmgn' ? 0 : Date.now() };
     window.__gmL = {};
     window.GM_getValue = (k, d) => (k in __gm ? JSON.parse(JSON.stringify(__gm[k])) : d);
@@ -85,7 +89,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
     window.__sockH = {}; window.__emits = [];
     window.io = () => ({ connected: true, on: (e, f) => { (__sockH[e] = __sockH[e] || []).push(f); if (e === 'connect') setTimeout(f, 30); }, emit: (...a) => __emits.push(a.join(' ')) });
     window.__sock = (e, d) => (__sockH[e] || []).forEach((f) => f(d));
-  }, [tw, orders, env]);
+  }, [tw, orders, env, VER]);
   await page.addScriptTag({ content: SCRIPT });
   await page.waitForTimeout(900);
   const api = {
@@ -484,7 +488,7 @@ async function main() {
       const t = await setup(browser, { env: 'gmgn', tw: { wallets: { live: [W[0]] }, confirmAbove: 99, safety: { dupSec: 0 } } });
       // a fake backtester tab: owns the relay, acks + answers calls, answers pings with a health snapshot
       await t.page.evaluate(() => {
-        window.__relay = { mode: 'ok', v: '3.5.0', sess: { ok: true, status: 200, ms: 180 }, relayed: [] };
+        window.__relay = { mode: 'ok', v: window.__VER, sess: { ok: true, status: 200, ms: 180 }, relayed: [] };
         const own = () => { __gm.agRelayOwner = { id: 'tabA', at: Date.now(), v: __relay.v, vis: false }; __gm.agRelayAt = Date.now(); };
         own(); window.__ownT = setInterval(() => { if (__relay.mode !== 'gone') own(); }, 1000);
         const set0 = window.GM_setValue;
@@ -523,9 +527,8 @@ async function main() {
       // acked but no result: an order is never resent
       await t.page.evaluate(() => { window.__relay.mode = 'ackonly'; window.__agtw.H.lostMs = 1200; window.GM_setValue('agPing', { id: window.__agtw.hs.pingId = 'p2', at: window.__agtw.hs.pingAt = Date.now() }); }); await t.wait(300);
       await t.page.evaluate(() => { window.__agtw.hs.pongAt = Date.now(); }); // relay looks alive again
-      await t.page.evaluate(() => { const H = window.__agtw; }); t.clear();
-      await t.page.evaluate(() => { window.__agtw.hs; }); await t.page.evaluate(() => { /* reset the 15s skip */ }); 
-      await t.page.evaluate(() => { window.__agtw.H.skipAfterMiss = 0; });
+      t.clear();
+      await t.page.evaluate(() => { window.__agtw.H.skipAfterMiss = 0; }); // don't skip the relay after the earlier miss
       await t.click('[data-bu="0.1"]'); await t.wait(1800);
       ok('acked but no answer → the order is NOT re-sent direct', t.posts(/\/buy$/).length === 0 && /took the order but did not answer/.test(await t.page.evaluate(() => [...document.querySelectorAll('.agtw-toast')].map((e) => e.innerText).join(' | '))));
       await t.page.evaluate(() => { window.__agtw.H.lostMs = 20000; window.__agtw.H.skipAfterMiss = 15000; window.__relay.mode = 'ok'; });
@@ -541,10 +544,10 @@ async function main() {
       // version mismatch
       await t.page.evaluate(() => { window.__relay.v = '3.4.0'; window.__gm.agRelayOwner.v = '3.4.0'; }); await t.wait(1100); await t.hook('healthTick');
       f = await fb();
-      ok('older script in the backtester tab → amber "Reload AG tab (3.4.0 → 3.5.0)"', f && /\by\b/.test(f.cls) && /Reload AG tab \(3\.4\.0 → 3\.5\.0\)/.test(f.txt), f && f.txt);
+      ok(`older script in the backtester tab → amber "Reload AG tab (3.4.0 → ${VER})"`, f && /\by\b/.test(f.cls) && new RegExp(`Reload AG tab \\(3\\.4\\.0 → ${VRE}\\)`).test(f.txt), f && f.txt);
       await t.page.click('#agtw .hfa'); await t.wait(200);
       ok('…which asks that tab to reload', (await t.gm('agCmd') || {}).cmd === 'reload');
-      await t.page.evaluate(() => { window.__relay.v = '3.5.0'; });
+      await t.page.evaluate(() => { window.__relay.v = window.__VER; });
       // panel
       await t.page.click('#agtw .hfi'); await t.wait(400);
       const pan = await t.page.evaluate(() => { const p = document.querySelector('#agtw .olp'); return p ? p.innerText.replace(/\s+/g, ' ') : ''; });
@@ -571,7 +574,7 @@ async function main() {
       const t = await setup(browser, { env: 'ag', tw: { wallets: { live: [W[0]] } } });
       await t.wait(1800);
       const own = await t.gm('agRelayOwner');
-      ok('the backtester tab claims the relay (with its version)', own && own.id && own.v === '3.5.0', JSON.stringify(own));
+      ok('the backtester tab claims the relay (with its version)', own && own.id && own.v === VER, JSON.stringify(own));
       const rpc = (id, ageMs, ack = 1500) => t.page.evaluate(([id, a, k, m]) => window.__fire('agRpc', { id, at: Date.now() - a, ackMs: k, calls: [{ method: 'GET', path: `/api/tokens/${m}/profile` }] }), [id, ageMs, ack, MINT]);
       const runs = () => t.be.calls.filter((c) => c.path === `/api/tokens/${MINT}/profile`).length;
       t.clear(); await rpc('r1', 0); await t.wait(500);
@@ -580,7 +583,7 @@ async function main() {
       ok('the same call id never runs twice', runs() === 1);
       await rpc('r2', 2000); await t.wait(300);
       ok('a call older than 0.7 s is dropped (the GMGN tab already went direct)', runs() === 1 && (await t.gm('agRpcAck')).id === 'r1');
-      await t.page.evaluate(() => { window.__gm.agRelayOwner = { id: 'otherTab', at: Date.now(), v: '3.5.0' }; });
+      await t.page.evaluate(() => { window.__gm.agRelayOwner = { id: 'otherTab', at: Date.now(), v: window.__VER }; });
       await rpc('r3', 0); await t.wait(300);
       ok('a standby backtester tab ignores calls (no double buys with 2 AG tabs)', runs() === 1);
       await t.page.evaluate(() => { window.__gm.agRelayOwner.at = Date.now() - 20000; }); await t.wait(3300); // lease expired → this tab takes over on its next beat
@@ -588,7 +591,7 @@ async function main() {
       ok('…and takes over when the owner goes away', (await t.gm('agRpcRes')).id === 'r4' && (await t.gm('agRelayOwner')).id === own.id, runs() + ' ' + JSON.stringify(await t.gm('agRelayOwner')));
       await t.page.evaluate(() => window.__fire('agPing', { id: 'pp', at: Date.now() })); await t.wait(200);
       const pong = await t.gm('agPong');
-      ok('answers pings with a health snapshot (version, session, socket, watcher)', pong && pong.id === 'pp' && pong.h.v === '3.5.0' && pong.h.sess && pong.h.sess.ok && pong.h.sock && 'leader' in pong.h, JSON.stringify(pong && pong.h).slice(0, 200));
+      ok('answers pings with a health snapshot (version, session, socket, watcher)', pong && pong.id === 'pp' && pong.h.v === VER && pong.h.sess && pong.h.sess.ok && pong.h.sock && 'leader' in pong.h, JSON.stringify(pong && pong.h).slice(0, 200));
       const f = await t.page.evaluate(() => document.querySelector('#agtw .hf').innerText.replace(/\s+/g, ' '));
       ok('backtester footbar: Relay this tab · AG ms · Feed · Orders', /Relay this tab/.test(f) && /AG \d+ ?ms/.test(f) && /Orders/.test(f), f);
       t.be.authDown = true;
