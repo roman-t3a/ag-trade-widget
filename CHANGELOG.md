@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.5.1
+- Auto-update: Tampermonkey now updates the script from this repo (`@updateURL` / `@downloadURL`).
+- `@require` socket.io is pinned with a sha256 integrity hash.
+- Code cleanup: pure logic moved into one `Core` block at the top of the file (curve math, multi-wallet legs,
+  relay rules, AG intel parsing, request bus…), shared by the widget and unit-tested in Node; dead code removed;
+  ESLint clean. Still a single file.
+- CI on GitHub Actions: lint, userscript header checks, unit tests, end-to-end tests; tagged versions are released
+  with the `.user.js` attached.
+
 ## 3.5.0
 - Connection: one backtester tab owns the relay (others stand by), so a call from GMGN is never executed twice.
 - Calls are acked in ms; no ack in 1.5 s → sent direct (safe); acked but no result → an order is never resent.

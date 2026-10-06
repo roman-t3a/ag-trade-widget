@@ -1,4 +1,4 @@
 node_modules/
-test/shots/
 *.log
 .DS_Store
+test/e2e/shots/

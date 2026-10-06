@@ -1,13 +1,26 @@
 {
   "name": "ag-trade-widget",
-  "version": "3.5.0",
+  "version": "3.5.1",
   "private": true,
   "description": "Tampermonkey userscript: GMGN/Axiom-style buy/sell widget that trades through Alpha Gardeners wallets",
   "scripts": {
-    "check": "node --check ag-trade-widget.user.js",
-    "test": "node test/ag-trade-widget.test.js"
+    "lint": "eslint .",
+    "check": "node --check ag-trade-widget.user.js && node scripts/check-userscript.js",
+    "test:unit": "node --test \"test/unit/**/*.test.js\"",
+    "test:e2e": "node test/e2e/widget.e2e.js",
+    "test": "npm run check && npm run lint && npm run test:unit && npm run test:e2e"
   },
   "devDependencies": {
-    "playwright": "^1.47.0"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "playwright": "^1.56.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/roman-t3a/ag-trade-widget.git"
   }
 }
