@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.6.1
-// @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN and Trojan.
+// @version      3.7.0
+// @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
 // @match        https://*.gmgn.ai/*
 // @match        https://trojan.com/*
+// @match        https://axiom.trade/*
 // @homepageURL  https://github.com/roman-t3a/ag-trade-widget
 // @supportURL   https://github.com/roman-t3a/ag-trade-widget/issues
 // @updateURL    https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
@@ -262,15 +263,19 @@
     }
 
     // ---- trading terminals (site adapters). Everything site-specific lives here; the widget itself is the same on
-    // every terminal. Pure: they take a location-like { pathname, search } / a title / an href, never touch the DOM.
-    //   mint(loc)      → mint of the token page you're on, or null (any other page: bar + positions still work)
+    // every terminal. Pure: they take a location-like { pathname, search } / a title / an attribute value; only a site
+    // with domMint reads the page, through the `doc` it is handed (unit tests pass a fake one).
+    //   mint(loc, doc) → mint of the token page you're on, or null (any other page: bar + positions still work)
     //   symbol(title)  → ticker from the tab title
-    //   cards          → selector for coin cards / rows in lists (badges, quick buy, hide), cardMint(href) → mint
+    //   cards          → selector for coin cards / rows in lists (badges, quick buy, hide)
+    //   cardAttr       → attribute holding the coin (default href), cardMint(value) → mint
     //   cardRow        → selector a click inside a card climbs to; cardMinH skips smaller matches (ticker chips)
     //   tokenUrl(mint) → where "open coin" goes
     const B58 = '[1-9A-HJ-NP-Za-km-z]{32,44}';
     const GMGN_TOKEN = new RegExp(`/sol/token/(?:[A-Za-z0-9]+_)?(${B58})`);
     const TROJAN_TOKEN = new RegExp(`[?&]token=(${B58})(?:&|$)`);
+    const AXIOM_LINK = new RegExp(`(?:solscan\\.io/token/|pump\\.fun/coin/)(${B58})`);
+    const ONLY_B58 = new RegExp(`^${B58}$`);
     const SITES = [
       {
         id: 'gmgn', name: 'GMGN', host: /(^|\.)gmgn\.ai$/,
@@ -301,6 +306,29 @@
         cardMint: (href) => (String(href || '').match(TROJAN_TOKEN) || [])[1] || null,
         tokenUrl: (m) => '/terminal?token=' + m,
       },
+      {
+        id: 'axiom', name: 'Axiom', host: /(^|\.)axiom\.trade$/,
+        // token page: /meme/<PAIR address>. The mint is not in the URL, so it comes from the page's own Solscan /
+        // pump.fun link (there is exactly one, for the coin on screen)
+        domMint: true,
+        mint: (loc, doc) => {
+          if (!/^\/meme\/[1-9A-HJ-NP-Za-km-z]{32,44}/.test(loc.pathname || '') || !doc) return null;
+          const a = doc.querySelector('a[href*="solscan.io/token/"], a[href*="pump.fun/coin/"]');
+          return (a && (String(a.getAttribute('href') || '').match(AXIOM_LINK) || [])[1]) || null;
+        },
+        symbol: (t) => { // "SIQ ↓ $3.44K | Axiom SOL"
+          const m = String(t || '').match(/^\s*\$?(.+?)\s+[↑↓]?\s*\$[\d.,]+\s*[KMB]?\s*\|\s*Axiom/i);
+          return m ? m[1].trim().slice(0, 20) : '';
+        },
+        // Pulse: every card is <div data-pulse-token-address="<mint>"> (its own buy buttons sit mid-right, so our
+        // overlay fits bottom-right)
+        cards: 'div[data-pulse-token-address]',
+        cardAttr: 'data-pulse-token-address',
+        cardRow: 'div[data-pulse-token-address]',
+        cardMinH: 0,
+        cardMint: (v) => (ONLY_B58.test(String(v || '')) ? v : null),
+        tokenUrl: (m) => '/meme/' + m, // Axiom redirects /meme/<mint> to the coin's pair page
+      },
     ];
     const siteFor = (hostname) => SITES.find((x) => x.host.test(String(hostname || ''))) || null;
     // tick source → label ('ag' or a site id)
@@ -327,7 +355,18 @@
   if (SITE) {
     // ---------------------------------------------------------------- trading terminal (GMGN, Trojan…)
     // Token = the terminal's token page you're on. Orders are relayed through your open backtester tab.
-    tradeWidget(SITE.id, () => SITE.mint(location), () => SITE.symbol(document.title), null, SITE);
+    // A site that reads the mint from the page (domMint): right after an in-app navigation the old coin's link can
+    // still be in the DOM for a moment, so the previous mint is ignored for 2.5s after the path changes.
+    let navPath = location.pathname, navOld = null, navAt = 0, lastM = null;
+    const siteMint = () => {
+      if (!SITE.domMint) return SITE.mint(location, document);
+      if (location.pathname !== navPath) { navOld = lastM; navPath = location.pathname; navAt = Date.now(); }
+      let m = SITE.mint(location, document);
+      if (m && m === navOld && Date.now() - navAt < 2500) m = null;
+      lastM = m || lastM;
+      return m;
+    };
+    tradeWidget(SITE.id, siteMint, () => SITE.symbol(document.title), null, SITE);
     return;
   }
 
@@ -2047,7 +2086,7 @@
         const hostEl = row && (row.tagName === 'TR' ? row.cells[0] : row);
         if (!hostEl || seen.has(hostEl)) continue;
         seen.add(hostEl);
-        const mint = site.cardMint(el.getAttribute('href'));
+        const mint = site.cardMint(el.getAttribute(site.cardAttr || 'href'));
         if (!mint) continue;
         const hide = hidden.has(mint) && mint !== getMint();
         if ((row.style.display === 'none') !== hide) row.style.display = hide ? 'none' : '';
@@ -2129,8 +2168,8 @@
         const b = e.target.closest('.qb');
         if (!b) return;
         const card = b.closest(site.cardRow);
-        const alt = card && [...card.querySelectorAll('img[alt]')].map((i) => i.alt.trim()).find(Boolean); // Trojan cards: name only in the logo's alt
-        const symG = env === 'trojan' ? (alt || '').slice(0, 15) : card ? (card.innerText || '').trim().split(/\s+/)[0].slice(0, 15) : '';
+        const alt = card && [...card.querySelectorAll('img[alt]')].map((i) => i.alt.trim()).filter(Boolean).pop(); // Trojan / Axiom cards: the name is the logo's alt (Axiom: after the launchpad's)
+        const symG = env === 'trojan' || env === 'axiom' ? (alt || '').slice(0, 15) : card ? (card.innerText || '').trim().split(/\s+/)[0].slice(0, 15) : '';
         buy(st.qb, b.dataset.qb, symG);
       }, true);
       ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach((t) => window.addEventListener(t, stop, true));
@@ -3053,7 +3092,7 @@
       if (env === 'ag') location.hash = 'token/' + mint;
       else {
         // reuse a link the page already has for this coin (keeps the terminal's own extra params), else the plain URL
-        const a = [...document.querySelectorAll(site.cards)].find((x) => site.cardMint(x.getAttribute('href')) === mint);
+        const a = [...document.querySelectorAll(site.cards)].find((x) => x.href && site.cardMint(x.getAttribute(site.cardAttr || 'href')) === mint);
         location.href = a ? a.href : site.tokenUrl(mint);
       }
     }

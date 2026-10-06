@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.7.0
+- **Axiom** (`axiom.trade`) support: the widget, holdings bar, positions and exits on every Axiom page; buy / sell
+  on a coin page (`/meme/<pair>`). The URL holds the pair address, so the mint is read from the page's own Solscan /
+  pump.fun link (ignoring the previous coin's link for a moment after an in-app navigation). Live mcap from the tab
+  title.
+- Axiom Pulse cards get the overlay: your position + PnL, ⚡ quick buy, AG risk pill + peek, hide coin.
+- Fix: "Open" from a GMGN card (peek / holdings bar) could navigate to `undefined`: GMGN cards are `<div href>`,
+  which have no `.href`. It now falls back to the coin URL.
+
 ## 3.6.1
 - Fix: on Trojan the widget showed up twice. Trojan's TradingView chart is a same-origin iframe whose URL is also
   `/terminal?token=…`, so the script ran inside it too. The script now runs in the top window only (`@noframes` +

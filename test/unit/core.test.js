@@ -306,6 +306,8 @@ test.describe('site adapters', () => {
     assert.equal(C.siteFor('www.trojan.com').id, 'trojan');
     assert.equal(C.siteFor('backtester.alphagardeners.xyz'), null);
     assert.equal(C.siteFor('nottrojan.com'), null);
+    assert.equal(C.siteFor('axiom.trade').id, 'axiom');
+    assert.equal(C.siteFor('axiom.trade.evil.com'), null);
     assert.equal(C.siteFor('gmgn.ai.evil.com'), null);
   });
 
@@ -313,7 +315,8 @@ test.describe('site adapters', () => {
     for (const s of C.SITES) {
       for (const k of ['mint', 'symbol', 'cardMint', 'tokenUrl']) assert.equal(typeof s[k], 'function', `${s.id}.${k}`);
       for (const k of ['id', 'name', 'cards', 'cardRow']) assert.equal(typeof s[k], 'string', `${s.id}.${k}`);
-      assert.equal(s.cardMint(s.tokenUrl(MINT)), MINT, `${s.id}: tokenUrl ⇄ cardMint`);
+      if (!s.cardAttr) assert.equal(s.cardMint(s.tokenUrl(MINT)), MINT, `${s.id}: tokenUrl ⇄ cardMint`);
+      else assert.equal(s.cardMint(MINT), MINT, `${s.id}: cardMint(${s.cardAttr})`);
     }
   });
 
@@ -343,9 +346,27 @@ test.describe('site adapters', () => {
     assert.equal(C.parseUsd('Datacenter $7.73K | Trojan'), 7730);
   });
 
+  test('axiom', () => {
+    const a = site('axiom'), PAIR = 'D47ZQ7BcNvDhjviQattcvm4WcJLouqTXwkU4QER5vePn';
+    const doc = (href) => ({ querySelector: (sel) => (href && /solscan|pump\.fun/.test(sel) ? { getAttribute: () => href } : null) });
+    assert.equal(a.mint(loc('https://axiom.trade/meme/' + PAIR), doc('https://solscan.io/token/' + MINT)), MINT);
+    assert.equal(a.mint(loc('https://axiom.trade/meme/' + PAIR), doc('https://pump.fun/coin/' + MINT)), MINT);
+    assert.equal(a.mint(loc('https://axiom.trade/meme/' + PAIR), doc(null)), null, 'page not rendered yet');
+    assert.equal(a.mint(loc('https://axiom.trade/pulse'), doc('https://solscan.io/token/' + MINT)), null, 'only on a coin page');
+    assert.equal(a.mint(loc('https://axiom.trade/meme/' + PAIR), null), null);
+    assert.equal(a.symbol('SIQ ↓ $3.44K | Axiom SOL'), 'SIQ');
+    assert.equal(a.symbol('Fomo wif Sword $22.5K | Axiom SOL'), 'Fomo wif Sword');
+    assert.equal(a.symbol('Axiom SOL | Pulse'), '');
+    assert.equal(a.cardMint(MINT), MINT);
+    assert.equal(a.cardMint('not a mint'), null);
+    assert.equal(a.tokenUrl(MINT), '/meme/' + MINT);
+    assert.equal(C.parseUsd('SIQ ↓ $3.44K | Axiom SOL'), 3440);
+  });
+
   test('srcName labels tick sources', () => {
     assert.equal(C.srcName('ag'), 'AG');
     assert.equal(C.srcName('gmgn'), 'GMGN');
     assert.equal(C.srcName('trojan'), 'Trojan');
+    assert.equal(C.srcName('axiom'), 'Axiom');
   });
 });

@@ -61,7 +61,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
   page.on('pageerror', (e) => errs.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error' && !/favicon|fonts\.g/.test(m.text())) errs.push(m.text()); });
   await page.exposeFunction('__be', (method, path, body) => be.handle(method, path, body ? JSON.parse(body) : null));
-  const html = '<!doctype html><html><head><title>' + title + '</title></head><body style="background:#0b0c0f;margin:0;height:3000px"><input id="outside" style="position:absolute;right:10px;top:10px">' + body + '</body></html>';
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title></head><body style="background:#0b0c0f;margin:0;height:3000px"><input id="outside" style="position:absolute;right:10px;top:10px">' + body + '</body></html>';
   await page.route('**/*', async (r) => {
     const u = new URL(r.request().url());
     if (u.hostname.includes('fonts.g')) return r.fulfill({ status: 200, body: '' });
@@ -428,6 +428,36 @@ async function main() {
       const head = await t.page.evaluate(() => (document.querySelector('#agtw') || {}).innerText || '');
       ok('Trojan token page: widget shows the symbol from the title', /DATACENTER/.test(head), (head.match(/.{0,30}DATACENTER.{0,30}/) || [head.slice(0, 80)])[0]);
       ok('no page errors (Trojan token)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    // ---------------------------------------------------------------- 10c · Axiom: Pulse cards + token page (mint read from the page)
+    {
+      const cards = [MINT, MINT2].map((m, i) => `<div data-pulse-token-address="${m}" style="position:relative;height:116px;margin:10px 0 0 420px;width:491px;background:#16181c;border:1px solid #222;color:#ddd;padding:8px;box-sizing:border-box"><img alt="Pump V1" width="1" height="1"><img alt="${i ? 'DABCAT' : 'JEVABLE'}" width="1" height="1"><a href="https://pump.fun/coin/${m}">pf</a> V $36K MC $22.5K</div>`).join('');
+      const t = await setup(browser, { env: 'axiom', path: 'https://axiom.trade/pulse', title: 'Axiom SOL | Pulse', body: cards, tw: { wallets: { live: [W[0]] } } });
+      await t.wait(2500);
+      const r = await t.page.evaluate(([m, m2]) => ({ c1: (document.querySelector(`[data-pulse-token-address="${m}"] .agtw-c`) || {}).innerText || '', c2: !!document.querySelector(`[data-pulse-token-address="${m2}"] .agtw-c`), mint: !!(document.querySelector('#agtw') || {}).innerText && /Open a token/.test(document.querySelector('#agtw').innerText) }), [MINT, MINT2]);
+      ok('Axiom: overlay on Pulse cards', r.c2 && /◎/.test(r.c1), r.c1);
+      ok('Axiom: Pulse is not a coin page (no mint)', r.mint);
+      ok('no page errors (Axiom cards)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    {
+      const PAIR = 'D47ZQ7BcNvDhjviQattcvm4WcJLouqTXwkU4QER5vePn';
+      const t = await setup(browser, { env: 'axiom', path: 'https://axiom.trade/meme/' + PAIR, title: 'SIQ ↓ $6.97K | Axiom SOL', body: `<a href="https://solscan.io/token/${MINT}">solscan</a>`, tw: { wallets: { live: [W[0]] } } });
+      await t.wait(1500);
+      const tk = await t.page.evaluate((m) => { const x = window.__agtw.ticks[m]; return x ? { mcap: x.mcap, src: x.src } : null; }, MINT);
+      ok('Axiom token page: mint from the page link (URL has the pair) + live mcap from the title', tk && tk.mcap === 6970 && tk.src === 'axiom', JSON.stringify(tk));
+      const head = await t.page.evaluate(() => (document.querySelector('#agtw') || {}).innerText || '');
+      ok('Axiom token page: widget shows the symbol', /\bSIQ\b/.test(head) && !/SIQ\s*[^\sA-Za-z0-9]{2}/.test(head), (head.match(/.{0,20}SIQ.{0,20}/) || [head.slice(0, 60)])[0]);
+      // in-app navigation to another coin: the old link lingers in the DOM → the old mint must not stick to the new page
+      await t.page.evaluate(() => history.pushState({}, '', '/meme/2Y1aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789ab'));
+      await t.wait(900);
+      const stale = await t.page.evaluate(() => /Open a token/.test(document.querySelector('#agtw').innerText));
+      await t.page.evaluate((m) => { document.querySelector('a[href*="solscan"]').href = 'https://solscan.io/token/' + m; }, MINT2);
+      await t.wait(900);
+      const nowM2 = await t.page.evaluate((m) => (document.querySelector('#agtw').innerText || '').includes(m.slice(0, 4)), MINT2);
+      ok('Axiom: after navigating, the previous coin is not reused; the new one is picked up', stale && nowM2, `stale-cleared=${stale} new=${nowM2}`);
+      ok('no page errors (Axiom token)', !t.errs.length, t.errs.join(' | '));
       await t.page.close();
     }
     // ---------------------------------------------------------------- 11 · holdings bar at the top
