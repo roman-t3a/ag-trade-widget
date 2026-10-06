@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.5.1
-// @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester and on GMGN.
+// @version      3.6.0
+// @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN and Trojan.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
 // @match        https://*.gmgn.ai/*
+// @match        https://trojan.com/*
+// @match        https://*.trojan.com/*
 // @homepageURL  https://github.com/roman-t3a/ag-trade-widget
 // @supportURL   https://github.com/roman-t3a/ag-trade-widget/issues
 // @updateURL    https://raw.githubusercontent.com/roman-t3a/ag-trade-widget/main/ag-trade-widget.user.js
@@ -259,9 +261,54 @@
       return bus;
     }
 
+    // ---- trading terminals (site adapters). Everything site-specific lives here; the widget itself is the same on
+    // every terminal. Pure: they take a location-like { pathname, search } / a title / an href, never touch the DOM.
+    //   mint(loc)      → mint of the token page you're on, or null (any other page: bar + positions still work)
+    //   symbol(title)  → ticker from the tab title
+    //   cards          → selector for coin cards / rows in lists (badges, quick buy, hide), cardMint(href) → mint
+    //   cardRow        → selector a click inside a card climbs to; cardMinH skips smaller matches (ticker chips)
+    //   tokenUrl(mint) → where "open coin" goes
+    const B58 = '[1-9A-HJ-NP-Za-km-z]{32,44}';
+    const GMGN_TOKEN = new RegExp(`/sol/token/(?:[A-Za-z0-9]+_)?(${B58})`);
+    const TROJAN_TOKEN = new RegExp(`[?&]token=(${B58})(?:&|$)`);
+    const SITES = [
+      {
+        id: 'gmgn', name: 'GMGN', host: /(^|\.)gmgn\.ai$/,
+        mint: (loc) => (String(loc.pathname || '').match(GMGN_TOKEN) || [])[1] || null,
+        symbol: (t) => { // "PUMPKART ↑ $76.62K | GMGN.AI …"
+          const m = String(t || '').match(/^\s*\$?([^\s↑↓|$]{1,20})\s*[↑↓]/) || String(t || '').match(/^\s*\$?([A-Za-z0-9._-]{1,20})\s/);
+          return m && !/^gmgn/i.test(m[1]) ? m[1] : '';
+        },
+        cards: 'div[href*="/sol/token/"], tr a[href*="/sol/token/"]',
+        cardRow: 'div[href*="/sol/token/"], tr',
+        cardMinH: 0,
+        cardMint: (href) => (String(href || '').match(GMGN_TOKEN) || [])[1] || null,
+        tokenUrl: (m) => '/sol/token/' + m,
+      },
+      {
+        id: 'trojan', name: 'Trojan', host: /(^|\.)trojan\.com$/,
+        // token page: /terminal?token=<mint>&…
+        mint: (loc) => (/^\/terminal\/?$/.test(loc.pathname || '') && (String(loc.search || '').match(TROJAN_TOKEN) || [])[1]) || null,
+        symbol: (t) => { // "Datacenter $7.73K | Trojan"
+          const m = String(t || '').match(/^\s*\$?(.+?)\s+[↑↓]?\s*\$[\d.,]+\s*[KMB]?\s*\|\s*Trojan/i);
+          return m ? m[1].trim().slice(0, 20) : '';
+        },
+        // Trenches / lists: every card is one <a href="/terminal?token=<mint>&…">; the ticker strip at the top uses the
+        // same link but is ~28px high, so anything under 80px is skipped
+        cards: 'a[href*="/terminal?"][href*="token="]',
+        cardRow: 'a[href*="/terminal?"][href*="token="]',
+        cardMinH: 80,
+        cardMint: (href) => (String(href || '').match(TROJAN_TOKEN) || [])[1] || null,
+        tokenUrl: (m) => '/terminal?token=' + m,
+      },
+    ];
+    const siteFor = (hostname) => SITES.find((x) => x.host.test(String(hostname || ''))) || null;
+    // tick source → label ('ag' or a site id)
+    const srcName = (src) => (src === 'ag' ? 'AG' : (SITES.find((x) => x.id === src) || { name: String(src || '?') }).name);
+
     return { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, isPump, supplyCost, buyImpact, curvePct, pickUnit,
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
-      sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus };
+      sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
@@ -273,16 +320,11 @@
   const HL = { sock: { ok: false, since: 0, last: 0, ping: 0, re: 0, subs: 0 }, sess: null, reconnect: null, log: [] };
   const hlog = (m, lvl) => { HL.log.unshift({ t: Date.now(), m, lvl: lvl || 'i' }); HL.log.length = Math.min(HL.log.length, 30); };
 
-  if (/(^|\.)gmgn\.ai$/.test(location.hostname)) {
-    // ---------------------------------------------------------------- GMGN
-    // Token = the GMGN token page you're on. Orders are relayed through your open backtester tab.
-    tradeWidget('gmgn',
-      () => (location.pathname.match(/\/sol\/token\/(?:[A-Za-z0-9]+_)?([1-9A-HJ-NP-Za-km-z]{32,44})/) || [])[1] || null,
-      () => { // title: "PUMPKART ↑ $76.62K | GMGN.AI …"
-        const t = document.title, m = t.match(/^\s*\$?([^\s↑↓|$]{1,20})\s*[↑↓]/) || t.match(/^\s*\$?([A-Za-z0-9._-]{1,20})\s/);
-        return m && !/^gmgn/i.test(m[1]) ? m[1] : '';
-      },
-      null);
+  const SITE = Core.siteFor(location.hostname);
+  if (SITE) {
+    // ---------------------------------------------------------------- trading terminal (GMGN, Trojan…)
+    // Token = the terminal's token page you're on. Orders are relayed through your open backtester tab.
+    tradeWidget(SITE.id, () => SITE.mint(location), () => SITE.symbol(document.title), null, SITE);
     return;
   }
 
@@ -401,13 +443,14 @@
   };
   const agSymbol = (m) => (lastRow && lastRow.tokenAddress === m && (lastRow.symbol || lastRow.token)) ||
     (document.title.match(/^\$?([A-Za-z0-9]{1,15})\s/) || [])[1] || '';
-  tradeWidget('ag', agMint, agSymbol, agLocalCall);
+  tradeWidget('ag', agMint, agSymbol, agLocalCall, null);
 
 
-  function tradeWidget(env, getMint, getSymbol, localCall) {
+  function tradeWidget(env, getMint, getSymbol, localCall, site) {
+    const SN = site ? site.name : 'AG'; // terminal name for the UI
     const AG = 'https://backtester.alphagardeners.xyz';
     const { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, bagCost, costOf, soldOf, avgEntry, rng, matchFlows, scaleLegs,
-      metric, metricsOf, firstOf, riskLevel, profileChips, tradeRows, sigTime } = Core;
+      metric, metricsOf, firstOf, riskLevel, profileChips, tradeRows, sigTime, srcName } = Core;
     const DEF_PRESET = () => ({ buy: [0.01, 0.1, 0.5, 1, 0.25, 2, 5, 10], sell: [10, 25, 50, 100, 5, 15, 33, 75], sup: [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5], usd: [5, 10, 25, 50, 100, 250, 500, 1000], sellSol: [0.05, 0.1, 0.25, 0.5, 1, 2, 0, 0], slippage: 60, fee: 0.001, mev: 'JITO' });
     const st = Object.assign({ mode: 'paper', preset: 0, wallets: { live: [] }, confirmAbove: 2, presets: [DEF_PRESET(), DEF_PRESET(), DEF_PRESET()],
       migPct: 100, protect: { arm: 70, floor: 15, pct: 100 }, qb: 0.1, cards: true,
@@ -649,7 +692,7 @@
       if (!(pct > 0)) return;
       if (pct > 20) return toast('% of supply is capped at 20% per click', true);
       const c = pctToSol(pct, mint);
-      if (!c) return toast(usdRate ? 'No market cap for this token yet (GMGN title / AG card) – use SOL mode' : 'No SOL price yet – open the wallet list once', true);
+      if (!c) return toast(usdRate ? `No market cap for this token yet (${env === 'ag' ? 'AG card' : SN + ' title'}) – use SOL mode` : 'No SOL price yet – open the wallet list once', true);
       buy(c.amount, null, null, `${c.totalPct}% of supply ≈ ${sol(c.amount * (st.buyMode !== 'split' ? pctWallets() : 1))} SOL @ $${(c.mu / 1000).toFixed(1)}K mcap${c.curve ? ' (bonding curve)' : ' (no pool depth: real cost a bit higher)'}`);
     }
 
@@ -722,7 +765,7 @@
       GM_addValueChangeListener('twTick', (_k, _o, v, remote) => { if (remote && v && v.mint) { stream.at = Date.now(); putTick(v.mint, v.mcap, v.src, false); } });
       GM_addValueChangeListener('twPosPing', (_k, _o, _v, remote) => { if (remote) { loadPos(); if (env !== 'ag') loadHeld(); } });
       if (env !== 'ag') {
-        const rd = () => { const m = getMint(), v = parseUsd(document.title); if (m && v) putTick(m, v, 'gmgn', true); };
+        const rd = () => { const m = getMint(), v = parseUsd(document.title); if (m && v) putTick(m, v, env, true); };
         new MutationObserver(rd).observe(document.head, { childList: true, subtree: true, characterData: true });
         rd();
         // ask the backtester tab to subscribe this token on AG's feed too (backup source, and for the order watcher)
@@ -1887,7 +1930,7 @@
       st.hiddenMeta[mint] = { t: Date.now(), n: c && Array.isArray(c.sigs) ? c.sigs.filter((x) => sigTime(x) == null).length : null };
       for (const k of Object.keys(st.hiddenMeta)) if (!st.hiddenCoins.includes(k)) delete st.hiddenMeta[k];
       save();
-      toast(st.unhideOnSignal ? 'Coin hidden · it comes back if AG signals it' : 'Coin hidden from GMGN lists · unhide in ⚙');
+      toast(st.unhideOnSignal ? 'Coin hidden · it comes back if AG signals it' : `Coin hidden from ${SN} lists · unhide in ⚙`);
     }
     function unhideCoin(mint) {
       st.hiddenCoins = (st.hiddenCoins || []).filter((m) => m !== mint); delete st.hiddenMeta[mint]; save();
@@ -1918,7 +1961,7 @@
           const sym = (prof && prof.symbol) || mint.slice(0, 4) + '…';
           const pre = last.presetName || last.preset || last.presetLabel || '';
           toast(`AG signal on ${sym}${pre ? ' · ' + pre : ''} → back in your list`);
-          notify(`AG signal · ${sym}`, `${pre || 'New signal'} on a coin you had hidden: it is back in your GMGN list`, 'alert', mint);
+          notify(`AG signal · ${sym}`, `${pre || 'New signal'} on a coin you had hidden: it is back in your ${SN} list`, 'alert', mint);
           if (DEBUG) console.log('[AG widget] unhidden on signal', mint, last);
           scanCards();
         } catch (_) {} finally { hidBusy--; }
@@ -1967,7 +2010,6 @@
     // On every GMGN token card / table row: your position (all wallets in the current mode) with PnL,
     // plus a ⚡ quick-buy button (amount in ⚙, uses the current mode, buy mode and your default wallet selection).
     let held = {};
-    const CARD_MINT = /\/sol\/token\/(?:[A-Za-z0-9]+_)?([1-9A-HJ-NP-Za-km-z]{32,44})/;
     let heldBusy = null;
     function loadHeld() { return heldBusy || (heldBusy = loadHeld0().finally(() => { heldBusy = null; })); }
     async function loadHeld0() {
@@ -1995,13 +2037,14 @@
       if (!st.cards) { document.querySelectorAll('.agtw-c').forEach((e) => e.remove()); document.querySelectorAll('.agtw-held').forEach((e) => e.classList.remove('agtw-held')); return; }
       const seen = new Set(), hidden = new Set(st.hiddenCoins || []), vh = window.innerHeight;
       const devAl = new Set(loadAlerts().filter((a) => a.kind === 'dev' && !ui.alertsGone[a.id]).map((a) => a.mint));
-      for (const el of document.querySelectorAll('div[href*="/sol/token/"], tr a[href*="/sol/token/"]')) {
+      for (const el of document.querySelectorAll(site.cards)) {
         if (el.closest('#agtw')) continue;
-        const row = el.tagName === 'A' ? el.closest('tr') : el;
+        if (site.cardMinH && el.getBoundingClientRect().height < site.cardMinH) continue;
+        const row = (el.tagName === 'A' && el.closest('tr')) || el;
         const hostEl = row && (row.tagName === 'TR' ? row.cells[0] : row);
         if (!hostEl || seen.has(hostEl)) continue;
         seen.add(hostEl);
-        const mint = ((el.getAttribute('href') || '').match(CARD_MINT) || [])[1];
+        const mint = site.cardMint(el.getAttribute('href'));
         if (!mint) continue;
         const hide = hidden.has(mint) && mint !== getMint();
         if ((row.style.display === 'none') !== hide) row.style.display = hide ? 'none' : '';
@@ -2082,8 +2125,9 @@
         }
         const b = e.target.closest('.qb');
         if (!b) return;
-        const card = b.closest('div[href*="/sol/token/"], tr');
-        const symG = card ? (card.innerText || '').trim().split(/\s+/)[0].slice(0, 15) : '';
+        const card = b.closest(site.cardRow);
+        const alt = card && [...card.querySelectorAll('img[alt]')].map((i) => i.alt.trim()).find(Boolean); // Trojan cards: name only in the logo's alt
+        const symG = env === 'trojan' ? (alt || '').slice(0, 15) : card ? (card.innerText || '').trim().split(/\s+/)[0].slice(0, 15) : '';
         buy(st.qb, b.dataset.qb, symG);
       }, true);
       ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach((t) => window.addEventListener(t, stop, true));
@@ -2387,7 +2431,7 @@
       const mu = mint ? mcapNow(mint) : null, cp = mint ? curvePct(mint) : null, tk = mint && ticks[mint], lv = isLive(mint);
       const tokLine = mint
         ? `<div class="tk"><b>${escH(sym || 'Token')}</b><span class="mut n sm">${tail(mint)}</span><button class="ib" data-cpm="${mint}" title="Copy mint">${ICON.copy}</button><button class="ib ${ui.panel === 'info' ? 'on' : ''}" data-a="p:info" title="Coin info: AG profile, your trades, connection">${ICON.info}</button><span class="sp"></span>
-          ${ui.busy ? `<span class="busy">${escH(ui.busy)}…</span>` : ''}${lv ? `<span class="lvd" title="Live price · ${tk.src === 'gmgn' ? 'GMGN stream' : 'AG stream'}"></span>` : ''}${mu ? `<span class="n mc ${lv && tk.dir > 0 ? 'up' : lv && tk.dir < 0 ? 'dn' : ''}" title="Market cap">$${kfmt(mu)}</span>` : ''}${cp != null ? `<span class="cv" title="Bonding curve (estimated)"><i style="width:${cp.toFixed(0)}%"></i></span><span class="mut n sm">${cp >= 100 ? 'migr.' : cp.toFixed(0) + '%'}</span>` : ''}</div>`
+          ${ui.busy ? `<span class="busy">${escH(ui.busy)}…</span>` : ''}${lv ? `<span class="lvd" title="Live price · ${srcName(tk.src)} stream"></span>` : ''}${mu ? `<span class="n mc ${lv && tk.dir > 0 ? 'up' : lv && tk.dir < 0 ? 'dn' : ''}" title="Market cap">$${kfmt(mu)}</span>` : ''}${cp != null ? `<span class="cv" title="Bonding curve (estimated)"><i style="width:${cp.toFixed(0)}%"></i></span><span class="mut n sm">${cp >= 100 ? 'migr.' : cp.toFixed(0) + '%'}</span>` : ''}</div>`
         : '<div class="tk mut">Open a token to trade</div>';
 
       // ---- buy
@@ -2645,7 +2689,7 @@
       if (env === 'ag') {
         const o = ownerNow(), S = HL.sock;
         rows = [
-          ['Relay · this backtester tab', iOwn() ? 'owns the relay: answers the GMGN widget' : o ? `standby · another backtester tab answers (v${o.v || '?'})` : 'claiming the relay…', byK.Relay, '', null],
+          ['Relay · this backtester tab', iOwn() ? 'owns the relay: answers the terminal widgets (GMGN, Trojan…)' : o ? `standby · another backtester tab answers (v${o.v || '?'})` : 'claiming the relay…', byK.Relay, '', null],
           ['AG API', a ? `session ${a.ok ? 'OK' : a.status} · checked ${agoS(now - a.at)} ago` : 'not checked yet', byK.AG, a && a.ok ? msS(a.ms) : '--', 'ag'],
           ['AG socket', S.ok ? `connected ${agoS(now - S.since)} · ${S.subs} coin${S.subs === 1 ? '' : 's'} · ${S.re} reconnect${S.re === 1 ? '' : 's'}` : 'disconnected · socket.io is retrying', byK.Feed, S.ok ? agoS(now - Math.max(S.last, S.ping, S.since)) : '--', null],
           ['Order watcher', `${byK.Orders.v === 'idle' ? 'no active orders' : byK.Orders.v} · ${act} active`, byK.Orders, '', null],
@@ -2657,7 +2701,7 @@
           ['Relay · backtester tab', rsub, byK.Relay, rs.s === 'up' ? msS(hs.rtt) : '--', 'relay'],
           ['AG API', a ? `session ${a.ok ? 'OK' : a.status} · ${a.via === 'direct' ? 'direct call' : 'checked'} ${agoS(now - a.at)} ago` : 'no call yet', byK.AG, a && a.ok ? msS(a.ms) : '--', 'ag'],
           ['AG socket', h.sock ? (S.ok ? `connected ${agoS(now - S.since)} · ${S.subs} coin${S.subs === 1 ? '' : 's'} · ${S.re} reconnect${S.re === 1 ? '' : 's'}` : 'disconnected · retrying') : 'runs in the backtester tab', { c: h.sock ? (S.ok ? 'g' : 'y') : 'n' }, h.sock && S.ok ? agoS(now - Math.max(S.last || 0, S.ping || 0, S.since || 0)) : '--', null],
-          ['Price feed', `GMGN title ticks${stream.at ? ' · AG ticks ' + agoS(now - stream.at) + ' ago' : ''}`, byK.Feed, byK.Feed.v, null],
+          ['Price feed', `${SN} title ticks${stream.at ? ' · AG ticks ' + agoS(now - stream.at) + ' ago' : ''}`, byK.Feed, byK.Feed.v, null],
           ['Order watcher', `${byK.Orders.v === 'AG tab' ? 'runs in the backtester tab' : byK.Orders.v === 'idle' ? 'no active orders' : 'needs the backtester tab'} · ${act} active`, byK.Orders, '', null],
         ];
       }
@@ -2740,7 +2784,7 @@
       const tk = mint && ticks[mint], relayAge = (Date.now() - (GM_getValue('agRelayAt', 0) || 0)) / 1000;
       const ago = (t) => (t ? Math.max(0, Math.round((Date.now() - t) / 1000)) + 's ago' : 'never');
       const conn = [
-        ['Price stream', tk && Date.now() - tk.at < 10000 ? `${tk.src === 'gmgn' ? 'GMGN' : 'AG'} · live` : tk ? 'stale · ' + ago(tk.at) : 'no ticks', tk && Date.now() - tk.at < 10000 ? 'ok' : tk ? 'warn' : 'bad'],
+        ['Price stream', tk && Date.now() - tk.at < 10000 ? `${srcName(tk.src)} · live` : tk ? 'stale · ' + ago(tk.at) : 'no ticks', tk && Date.now() - tk.at < 10000 ? 'ok' : tk ? 'warn' : 'bad'],
         ['AG feed', env === 'ag' ? (stream.ok ? 'connected' : 'not connected') : stream.at ? 'via backtester · ' + ago(stream.at) : 'no ticks from the backtester yet', env === 'ag' ? (stream.ok ? 'ok' : 'bad') : stream.at && Date.now() - stream.at < 20000 ? 'ok' : 'warn'],
         ['Backtester relay', env === 'ag' ? 'this tab' : relayAge < 30 ? 'heartbeat ' + Math.round(relayAge) + 's ago' : 'backtester tab not open', env === 'ag' || relayAge < 30 ? 'ok' : 'bad'],
         ['AG positions', posRef ? 'synced ' + ago(posRef.at) : 'not loaded', posRef && Date.now() - posRef.at < 12000 ? 'ok' : 'warn'],
@@ -2778,7 +2822,7 @@
           ${ck('al.move.on', 'Fast mcap moves', A.move.on)}${f('al.move.pct', 'when ≥ % in 1 min', A.move.pct, 5)}
           ${ck('al.fills', 'Fill & exit notices', A.fills)}${ck('al.sound', 'Sound', A.sound)}
           ${ck('al.desktop', 'Desktop notifications', A.desktop)}<span class="mut sm">${window.Notification ? 'permission: ' + Notification.permission : 'not supported'}</span></div>
-        <span class="sm2">Size & GMGN cards</span>
+        <span class="sm2">Size & ${env === 'ag' ? 'terminal' : SN} cards</span>
         <div class="eg two">${f('scalePct', 'Size % (or drag the corner)', Math.round((Number(st.scale) || 1) * 100), 5)}${ck('autoFit', 'Auto-fit screen height', st.autoFit)}
           ${f('qb', 'Card quick buy (◎)', st.qb, 0.01)}${ck('cards', 'Holdings + quick buy on cards', st.cards)}</div>
         <span class="sm2">Layout</span>
@@ -3004,7 +3048,11 @@
     // ---------------------------------------------------------- small helpers
     function openCoin(mint) {
       if (env === 'ag') location.hash = 'token/' + mint;
-      else location.href = '/sol/token/' + mint;
+      else {
+        // reuse a link the page already has for this coin (keeps the terminal's own extra params), else the plain URL
+        const a = [...document.querySelectorAll(site.cards)].find((x) => site.cardMint(x.getAttribute('href')) === mint);
+        location.href = a ? a.href : site.tokenUrl(mint);
+      }
     }
 
     // ---------------------------------------------------------- notifications: toasts, sound, desktop

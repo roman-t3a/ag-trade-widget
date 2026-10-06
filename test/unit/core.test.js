@@ -294,3 +294,58 @@ test.describe('agBus', () => {
     assert.equal(C.agBus(W, () => resp(200, {})), a);
   });
 });
+
+test.describe('site adapters', () => {
+  const loc = (u) => { const x = new URL(u); return { pathname: x.pathname, search: x.search }; };
+  const site = (id) => C.SITES.find((s) => s.id === id);
+
+  test('siteFor picks the terminal from the hostname', () => {
+    assert.equal(C.siteFor('gmgn.ai').id, 'gmgn');
+    assert.equal(C.siteFor('www.gmgn.ai').id, 'gmgn');
+    assert.equal(C.siteFor('trojan.com').id, 'trojan');
+    assert.equal(C.siteFor('www.trojan.com').id, 'trojan');
+    assert.equal(C.siteFor('backtester.alphagardeners.xyz'), null);
+    assert.equal(C.siteFor('nottrojan.com'), null);
+    assert.equal(C.siteFor('gmgn.ai.evil.com'), null);
+  });
+
+  test('every site has the full adapter shape', () => {
+    for (const s of C.SITES) {
+      for (const k of ['mint', 'symbol', 'cardMint', 'tokenUrl']) assert.equal(typeof s[k], 'function', `${s.id}.${k}`);
+      for (const k of ['id', 'name', 'cards', 'cardRow']) assert.equal(typeof s[k], 'string', `${s.id}.${k}`);
+      assert.equal(s.cardMint(s.tokenUrl(MINT)), MINT, `${s.id}: tokenUrl ⇄ cardMint`);
+    }
+  });
+
+  test('gmgn', () => {
+    const g = site('gmgn');
+    assert.equal(g.mint(loc('https://gmgn.ai/sol/token/' + MINT)), MINT);
+    assert.equal(g.mint(loc('https://gmgn.ai/sol/token/abc123_' + MINT)), MINT);
+    assert.equal(g.mint(loc('https://gmgn.ai/trend')), null);
+    assert.equal(g.symbol('PUMPKART ↑ $76.62K | GMGN.AI | The Fastest…'), 'PUMPKART');
+    assert.equal(g.symbol('GMGN.AI | The Fastest Multi-Chain Meme Trading Terminal'), '');
+    assert.equal(g.cardMint('/sol/token/' + MINT), MINT);
+  });
+
+  test('trojan', () => {
+    const t = site('trojan');
+    assert.equal(t.mint(loc(`https://trojan.com/terminal?token=${MINT}&chain=sol`)), MINT);
+    assert.equal(t.mint(loc(`https://trojan.com/terminal?chain=sol&token=${MINT}`)), MINT);
+    assert.equal(t.mint(loc('https://trojan.com/trenches')), null);
+    assert.equal(t.mint(loc(`https://trojan.com/swap?token=${MINT}`)), null);
+    assert.equal(t.mint(loc('https://trojan.com/terminal?token=notamint')), null);
+    assert.equal(t.symbol('Datacenter $7.73K | Trojan'), 'Datacenter');
+    assert.equal(t.symbol('Golem Emet ↑ $1.2M | Trojan'), 'Golem Emet');
+    assert.equal(t.symbol('Trenches | Trojan'), '');
+    assert.equal(t.cardMint(`/terminal?token=${MINT}&a=1&b=2`), MINT);
+    assert.equal(t.cardMint(`https://trojan.com/terminal?x=1&token=${MINT}`), MINT);
+    assert.equal(t.cardMint('https://pump.fun/' + MINT), null);
+    assert.equal(C.parseUsd('Datacenter $7.73K | Trojan'), 7730);
+  });
+
+  test('srcName labels tick sources', () => {
+    assert.equal(C.srcName('ag'), 'AG');
+    assert.equal(C.srcName('gmgn'), 'GMGN');
+    assert.equal(C.srcName('trojan'), 'Trojan');
+  });
+});

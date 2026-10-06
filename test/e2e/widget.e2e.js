@@ -54,14 +54,14 @@ function backend() {
   };
 }
 
-async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth } = {}) {
+async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth, title = 'JEVABLE ↑ $6.97K | GMGN.AI' } = {}) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1.5 });
   const be = backend();
   const errs = [];
   page.on('pageerror', (e) => errs.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error' && !/favicon|fonts\.g/.test(m.text())) errs.push(m.text()); });
   await page.exposeFunction('__be', (method, path, body) => be.handle(method, path, body ? JSON.parse(body) : null));
-  const html = '<!doctype html><html><head><title>JEVABLE ↑ $6.97K | GMGN.AI</title></head><body style="background:#0b0c0f;margin:0;height:3000px"><input id="outside" style="position:absolute;right:10px;top:10px">' + body + '</body></html>';
+  const html = '<!doctype html><html><head><title>' + title + '</title></head><body style="background:#0b0c0f;margin:0;height:3000px"><input id="outside" style="position:absolute;right:10px;top:10px">' + body + '</body></html>';
   await page.route('**/*', async (r) => {
     const u = new URL(r.request().url());
     if (u.hostname.includes('fonts.g')) return r.fulfill({ status: 200, body: '' });
@@ -77,7 +77,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
   await page.evaluate(([tw, orders, env, ver]) => {
     localStorage.setItem('agtwTest', '1');
     window.GM_info = { script: { version: ver } }; window.__VER = ver;
-    window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env === 'gmgn' ? 0 : Date.now() };
+    window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env !== 'ag' ? 0 : Date.now() };
     window.__gmL = {};
     window.GM_getValue = (k, d) => (k in __gm ? JSON.parse(JSON.stringify(__gm[k])) : d);
     window.GM_setValue = (k, v) => { const o = __gm[k]; __gm[k] = JSON.parse(JSON.stringify(v)); (__gmL[k] || []).forEach((f) => f(k, o, v, false)); };
@@ -399,6 +399,35 @@ async function main() {
       await t.page.click('.agtw-peek [data-phide]'); await t.wait(400);
       ok('"Hide coin" hides that card', await t.page.evaluate((m) => document.querySelector(`div[href="/sol/token/${m}"]`).style.display === 'none', MINT));
       ok('no page errors (cards)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    // ---------------------------------------------------------------- 10b · Trojan: Trenches cards + token page
+    {
+      const chip = `<a href="/terminal?token=${MINT}&x=1" style="display:block;height:28px;width:200px;margin:0 0 0 420px;background:#222;color:#ddd">JEVABLE chip</a>`;
+      const cards = [MINT, MINT2].map((m, i) => `<a href="/terminal?token=${m}&chain=sol" style="display:block;position:relative;height:120px;margin:10px 0 0 420px;width:472px;background:#16181c;border:1px solid #222;color:#ddd;padding:8px;box-sizing:border-box"><img alt="${i ? 'DABCAT' : 'JEVABLE'}" width="1" height="1">0.69 V $5.28K MC</a>`).join('');
+      const t = await setup(browser, { env: 'trojan', path: 'https://trojan.com/trenches', title: 'Trenches | Trojan', body: chip + cards, tw: { wallets: { live: [W[0]] } } });
+      await t.wait(2500);
+      const r = await t.page.evaluate(([m, m2]) => ({
+        chip: !!document.querySelector(`a[href*="x=1"] .agtw-c`),
+        c1: (document.querySelector(`a[href="/terminal?token=${m}&chain=sol"] .agtw-c`) || {}).innerText || '',
+        c2: !!document.querySelector(`a[href="/terminal?token=${m2}&chain=sol"] .agtw-c`),
+      }), [MINT, MINT2]);
+      ok('Trojan: overlay on Trenches cards', r.c2 && /◎/.test(r.c1), r.c1);
+      ok('Trojan: 28px ticker chips are left alone', !r.chip);
+      const href0 = t.page.url();
+      await t.page.click(`a[href="/terminal?token=${MINT}&chain=sol"] .agtw-c .qb`); await t.wait(500);
+      ok('Trojan: ⚡ on a card does not open the coin', t.page.url() === href0, t.page.url());
+      ok('no page errors (Trojan cards)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    {
+      const t = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'DATACENTER $6.97K | Trojan', tw: { wallets: { live: [W[0]] } } });
+      await t.wait(1500);
+      const tk = await t.page.evaluate((m) => { const x = window.__agtw.ticks[m]; return x ? { mcap: x.mcap, src: x.src } : null; }, MINT);
+      ok('Trojan token page: mint from ?token= and live mcap from the title', tk && tk.mcap === 6970 && tk.src === 'trojan', JSON.stringify(tk));
+      const head = await t.page.evaluate(() => (document.querySelector('#agtw') || {}).innerText || '');
+      ok('Trojan token page: widget shows the symbol from the title', /DATACENTER/.test(head), (head.match(/.{0,30}DATACENTER.{0,30}/) || [head.slice(0, 80)])[0]);
+      ok('no page errors (Trojan token)', !t.errs.length, t.errs.join(' | '));
       await t.page.close();
     }
     // ---------------------------------------------------------------- 11 · holdings bar at the top

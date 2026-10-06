@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.6.0
+- **Trojan** (`trojan.com`) support: the widget, holdings bar, positions and exits work on every Trojan page;
+  on a token page (`/terminal?token=<mint>`) you can buy / sell, with live mcap from the tab title.
+- Trojan Trenches / list cards get the same overlay as GMGN cards: your position + PnL, ⚡ quick buy, AG risk pill
+  and hover peek, hide coin (the 28px ticker strip at the top is left alone).
+- Site adapters: everything terminal-specific (token from the URL, symbol from the title, card selector, coin URL)
+  now lives in `Core.SITES`, unit-tested with real URLs and titles. Adding a terminal = one entry there and one
+  `@match` line. GMGN behaviour unchanged.
+
 ## 3.5.1
 - Auto-update: Tampermonkey now updates the script from this repo (`@updateURL` / `@downloadURL`).
 - `@require` socket.io is pinned with a sha256 integrity hash.
