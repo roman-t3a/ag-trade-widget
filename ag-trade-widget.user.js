@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.10.0
+// @version      3.10.1
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -1946,7 +1946,7 @@
     #agtw .bform{display:flex;flex-direction:column;gap:7px;background:#1C1F25;border:1px solid var(--ln);border-radius:10px;padding:9px}
     #agtw .bform select{width:100%}
     #agtw .bsent{background:var(--bg3);border:1px solid var(--ln2);border-radius:8px;padding:7px 8px;color:#C9CDD4;line-height:1.4}
-    #agtw .intel.tab.bund{background:#2A2412;color:#FFE08A}
+    #agtw .intel.tab.bund{width:30px;background:#2A2412;color:#FFE08A;border-left-color:#5A4A1C} /* collapsed: back to the 30px tab (.intel.bund sets 340px) */
     #agtw .ihd{position:sticky;top:-10px;background:#15171B;margin:-10px -10px 0;padding:8px 10px;z-index:1;border-bottom:1px solid var(--ln2)}
     #agtw .ihero{display:flex;gap:10px;align-items:center;background:#1A2012;border:1px solid #4E6420;border-radius:12px;padding:10px}
     #agtw .iring{position:relative;width:56px;height:56px;flex:none}

@@ -535,6 +535,11 @@ async function main() {
       ok('Trojan: the bundles panel reads Trojan\'s own holders data (2 bundles, 9% held)', /BUNDLES/.test(d) && /2 bundles still hold\s*9\.0%/.test(d.replace(/\s+/g, ' ')), d.replace(/\s+/g, ' ').slice(0, 200));
       ok('Trojan: bundle rows show funder, wallets, share held', /u6PJ…Xq2w/.test(d) && /2 wallets/.test(d) && /6\.0%/.test(d) && /dev-linked/.test(d));
       await t.page.screenshot({ path: `${OUT}/30-bundles-panel.png` });
+      await t.page.click('#agtw .bund .ihd [data-a="bund"]'); await t.wait(300);
+      const tabW = await t.page.evaluate(() => { const e = document.querySelector('#agtw .intel.tab.bund'); return e ? Math.round(e.getBoundingClientRect().width) : null; });
+      ok('Trojan: collapsing the bundles panel folds it to the thin tab', tabW != null && tabW <= 40, String(tabW));
+      await t.page.click('#agtw .intel.tab.bund'); await t.wait(300);
+      ok('Trojan: the tab opens it again', await t.page.evaluate(() => !!document.querySelector('#agtw .intel.bund .ii') && document.querySelector('#agtw .intel.bund').getBoundingClientRect().width > 300));
       await t.page.click(`#agtw [data-bsel="${F1}"]`); await t.wait(300);
       d = await dock();
       ok('Trojan: a bundle opens with funding + timeline', /FUNDING/.test(d) && /WHAT IT DID/.test(d) && /last buy/.test(d) && /Sell my bag/.test(d), d.replace(/\s+/g, ' ').slice(0, 160));

@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.10.1
+- Fix: collapsing the Trojan BUNDLES panel left a wide empty box; it now folds to the thin tab (click it to reopen).
+
 ## 3.10.0
 - **Trojan bundles** (Trojan only). A BUNDLES panel docks next to the widget on every Trojan coin:
   - bundle risk, how many bundles still hold how much of the supply, snipers, dev-linked wallets, a supply bar;
