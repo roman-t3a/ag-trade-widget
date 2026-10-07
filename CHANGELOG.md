@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.10.0
+- **Trojan bundles** (Trojan only). A BUNDLES panel docks next to the widget on every Trojan coin:
+  - bundle risk, how many bundles still hold how much of the supply, snipers, dev-linked wallets, a supply bar;
+  - one row per bundle (wallets sharing the same first funder): wallets, share held, last move (SOLD x%, EXIT,
+    ACCUM, SPLIT, NEW, HOLDING), PnL, bag left;
+  - open a bundle: bought / sold / PnL, funder → wallets, flags (bundled at launch, same funding amount, snipers,
+    dev-linked), what it did, sell my bag, rule for this bundle, watch the funder everywhere.
+- Data: Trojan's own holders endpoint (`/v1/tokens/bundled-positions`). The widget reads the answers Trojan's page
+  already gets, asks for the coin on screen if the page didn't, and (one Trojan tab at a time) watches the coins you
+  hold every ~15s with the same request.
+- **Bundle rules**: when (any / top-3 / ≥ X% / dev-linked / sniper bundle / watched funder) sells ≥ X% within N s,
+  is out, accumulates, sends tokens out, appears, or ALL bundles are out; on this coin / coins I hold / any coin I
+  open; then alert, sell X%, sell initials, hide the coin, or **buy** (reverse rules, paper by default). Once per
+  coin or a cooldown, shared across tabs; LIVE rules ask for confirmation; safety rails apply to rule buys.
+- Feed of bundle moves across coins; `BUNDLE −x%` badges in the holdings bar and `BUNDLES x%` on Trenches cards;
+  BUNDLE alert cards say what happened and what the rule did.
+
 ## 3.9.0
 - **Faster balance / position updates after a trade.** Buys lower the wallet balances right away, then AG is
   re-read at 0.6 · 1.5 · 3 · 5 · 8 · 12 · 18 · 26 s until both the position and the balance show the trade (instead

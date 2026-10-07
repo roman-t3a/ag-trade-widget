@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.9.0
+// @version      3.10.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -198,6 +198,123 @@
     // The terminal's own "Hide token" (stays hidden in your account there, we can't undo it): opt-in, smart mode only,
     // live data only, and only for a coin still unmatched `after` minutes after we first saw it.
     const nativeDue = (f, live, isMatch, seenAt, now) => !!(f && f.native && f.mode === 'smart' && live && !isMatch && seenAt && now - seenAt >= Math.max(0, Number(f.after) || 0) * 60000);
+
+    // ---- Trojan bundles. Rows = Trojan's /v1/tokens/bundled-positions entries (top holders of one coin: balances,
+    // buys / sells / transfers, sniped / bundled / dev-received amounts, each wallet's first funder).
+    // A bundle ("cluster") = 2+ wallets with the same first funder. Balances are in token units; `supply` (default
+    // 1B, pump.fun) turns them into % of supply; `px` (SOL per token, optional) values what is still held.
+    const BUNDLE_MAX = 15; // more wallets than this from one funder looks like an exchange / bot hot wallet, not a bundle
+    function clusterize(rows, supply, px) {
+      const sup = num(supply) > 0 ? num(supply) : 1e9, by = {};
+      for (const r of rows || []) {
+        const f = r && r.fundingInfo && r.fundingInfo.firstNativeFunderAddress;
+        if (!f || !r.walletAddress) continue;
+        (by[f] = by[f] || []).push(r);
+      }
+      const out = [];
+      for (const [id, ws] of Object.entries(by)) {
+        if (ws.length < 2) continue;
+        const sum = (k) => ws.reduce((a, w) => a + (num(w[k]) || 0), 0);
+        const bal = sum('currentTokenBalance'), inflow = sum('amountTokensBought') + sum('amountTokensReceived') + sum('amountTokensMinted');
+        const spent = sum('amountNativeSpent'), earned = sum('amountNativeEarned'), value = num(px) > 0 ? bal * px : null;
+        const amts = ws.map((w) => num(w.fundingInfo.firstNativeFundingAmount)).filter((x) => x > 0);
+        const sameAmt = amts.length >= 2 && Math.max(...amts) - Math.min(...amts) <= Math.max(...amts) * 0.02;
+        out.push({
+          id, n: ws.length, bal, inflow, pct: (bal / sup) * 100, left: inflow > 0 ? Math.min(1, bal / inflow) : (bal > 0 ? 1 : 0),
+          spent, earned, value, pnl: earned - spent + (value || 0), sells: sum('numSells'), buys: sum('numBuys'), sent: sum('numTransfersOut'),
+          sniper: ws.some((w) => num(w.amountSniped) > 0), bundled: ws.some((w) => num(w.amountBundled) > 0),
+          dev: ws.some((w) => num(w.amountReceivedFromDev) > 0 || num(w.amountReceivedFromInsider) > 0),
+          sameAmt, fundAmt: amts.length ? amts[0] : null, hot: ws.length > BUNDLE_MAX,
+          lastSell: Math.max(0, ...ws.map((w) => num(w.lastSellTimestamp) || 0)), lastBuy: Math.max(0, ...ws.map((w) => num(w.lastBuyTimestamp) || 0)),
+          wallets: ws.map((w) => ({ addr: w.walletAddress, bal: num(w.currentTokenBalance) || 0, bought: num(w.amountTokensBought) || 0, sold: num(w.amountTokensSold) || 0,
+            spent: num(w.amountNativeSpent) || 0, earned: num(w.amountNativeEarned) || 0, fund: num(w.fundingInfo.firstNativeFundingAmount), lastBuy: num(w.lastBuyTimestamp), lastSell: num(w.lastSellTimestamp) }))
+            .sort((a, b) => b.bal - a.bal),
+        });
+      }
+      return out.sort((a, b) => b.bal - a.bal);
+    }
+    // whole-coin view: what the bundles still hold + a 0-100 risk (held share, dev links, snipers, sell pressure)
+    function bundleSummary(cl, rows, supply) {
+      const sup = num(supply) > 0 ? num(supply) : 1e9, real = (cl || []).filter((c) => !c.hot);
+      const held = real.reduce((a, c) => a + c.pct, 0), peak = real.reduce((a, c) => a + (c.inflow / sup) * 100, 0);
+      const snipers = (rows || []).filter((r) => num(r.amountSniped) > 0), dev = (rows || []).filter((r) => num(r.amountReceivedFromDev) > 0);
+      const sold = real.length ? real.reduce((a, c) => a + (1 - c.left) * c.inflow, 0) / Math.max(1, real.reduce((a, c) => a + c.inflow, 0)) : 0;
+      const risk = Math.max(0, Math.min(100, Math.round(held * 1.6 + (dev.length ? 12 : 0) + Math.min(15, snipers.length * 1.5) + sold * 20)));
+      return { clusters: real.length, wallets: real.reduce((a, c) => a + c.n, 0), held, peak, snipers: snipers.length,
+        snipersOut: snipers.filter((r) => (num(r.currentTokenBalance) || 0) <= 0).length, dev: dev.length, risk, level: risk >= 60 ? 'high' : risk >= 30 ? 'mid' : 'low' };
+    }
+    // history: one compact point per snapshot { at, total, c: { id: [bal, inflow, spent, sent, pct] } }, kept `keepMs`
+    function bundlePoint(cl, now) {
+      const c = {};
+      for (const x of cl) c[x.id] = [x.bal, x.inflow, x.spent, x.sent, x.pct];
+      return { at: now, total: cl.filter((x) => !x.hot).reduce((a, x) => a + x.pct, 0), c };
+    }
+    function pushPoint(hist, pt, keepMs) {
+      const h = (hist || []).filter((p) => pt.at - p.at <= keepMs);
+      h.push(pt);
+      return h.length > 400 ? h.slice(-400) : h;
+    }
+    // Bundle rules: { who: any|top3|min|dev|snipers|funder, minPct, funder, when, pct, sol, windowSec, scope, then, … }
+    //   when: sell (drops ≥ pct % of its bag within the window) · exit (has sold ≥ pct % of everything it got, crossing)
+    //         acc (spent ≥ sol ◎ more within the window) · send (sent tokens out within the window) · new (a cluster
+    //         that wasn't there appears, holding ≥ pct %) · allout (all bundles together fall to ≤ pct % of supply)
+    //         · funder (a watched funder's cluster is on the coin)
+    const BUNDLE_WHEN = ['sell', 'exit', 'acc', 'send', 'new', 'allout', 'funder'];
+    function whoOk(rule, c, rank, watch) {
+      if (c.hot && rule.who !== 'funder') return false;
+      switch (rule.who) {
+        case 'top3': return rank < 3;
+        case 'min': return c.pct >= (num(rule.minPct) || 0);
+        case 'dev': return c.dev;
+        case 'snipers': return c.sniper;
+        case 'funder': return (watch || []).includes(c.id) || c.id === rule.funder;
+        default: return true;
+      }
+    }
+    // → [{ id, kind, pct, sol, n, text }] for the newest point of `hist` (cl = the newest clusters)
+    function bundleMatches(rule, hist, cl, now, watch) {
+      if (!hist || !hist.length || !cl) return [];
+      const last = hist[hist.length - 1], win = Math.max(5, num(rule.windowSec) || 60) * 1000;
+      const base = hist.find((p) => now - p.at <= win) || last; // oldest point inside the window
+      const first = hist[0], pct = num(rule.pct) || 0, out = [];
+      if (rule.when === 'allout') {
+        const was = hist.some((p) => p.total > pct + 0.5);
+        if (was && last.total <= pct) out.push({ id: '*', kind: 'allout', pct: last.total, n: 0, text: `bundles are out: they hold ${last.total.toFixed(1)}% of supply now` });
+        return out;
+      }
+      cl.forEach((c, rank) => {
+        if (!whoOk(rule, c, rank, watch)) return;
+        const b = base.c[c.id], tag = `${c.id.slice(0, 4)}…${c.id.slice(-4)}`;
+        if (rule.when === 'sell' && b && b[0] > 0) {
+          const drop = ((b[0] - c.bal) / b[0]) * 100;
+          if (drop >= pct) out.push({ id: c.id, kind: 'sell', pct: drop, n: c.n, text: `${tag} sold ${drop.toFixed(0)}% of its bag in ${Math.round((now - base.at) / 1000)}s` });
+        } else if (rule.when === 'exit') {
+          const soldNow = (1 - c.left) * 100, before = hist.slice(0, -1).some((p) => p.c[c.id] && p.c[c.id][1] > 0 && (1 - p.c[c.id][0] / p.c[c.id][1]) * 100 < pct);
+          if (soldNow >= pct && before) out.push({ id: c.id, kind: 'exit', pct: soldNow, n: c.n, text: `${tag} is out: sold ${soldNow.toFixed(0)}% of what it got` });
+        } else if (rule.when === 'acc' && b) {
+          const more = c.spent - b[2];
+          if (more >= (num(rule.sol) || 0.5)) out.push({ id: c.id, kind: 'acc', sol: more, n: c.n, text: `${tag} bought ◎ ${more.toFixed(2)} more (${c.n} wallets)` });
+        } else if (rule.when === 'send' && b && c.sent > b[3]) {
+          out.push({ id: c.id, kind: 'send', n: c.sent - b[3], text: `${tag} sent tokens out ${c.sent - b[3]}× (new wallets?)` });
+        } else if (rule.when === 'new' && !first.c[c.id] && last.at - first.at >= 20000 && c.pct >= pct) {
+          out.push({ id: c.id, kind: 'new', pct: c.pct, n: c.n, text: `new bundle ${tag}: ${c.n} wallets hold ${c.pct.toFixed(1)}%` });
+        } else if (rule.when === 'funder') {
+          out.push({ id: c.id, kind: 'funder', pct: c.pct, n: c.n, text: `watched funder ${tag} is here: ${c.n} wallets hold ${c.pct.toFixed(1)}%` });
+        }
+      });
+      return out;
+    }
+    const BUNDLE_WHO = { any: 'any bundle', top3: 'a top-3 bundle', min: 'a bundle holding ≥ {minPct}%', dev: 'a dev-linked bundle', snipers: 'a sniper bundle', funder: 'a watched funder' };
+    const BUNDLE_THEN = { alert: 'alert me', sell: 'sell {sellPct}% of my bag', init: 'sell my initials', hide: 'hide the coin', buy: 'buy ◎ {buySol} ({mode})' };
+    function ruleText(r) {
+      const f = (s) => s.replace(/\{(\w+)\}/g, (_m, k) => (r[k] != null ? r[k] : ''));
+      const win = `within ${r.windowSec || 60}s`;
+      const when = { sell: `sells ≥ ${r.pct}% of its bag ${win}`, exit: `has sold ≥ ${r.pct}% of what it got`, acc: `buys ≥ ◎ ${r.sol} more ${win}`,
+        send: `sends tokens to other wallets ${win}`, new: `appears holding ≥ ${r.pct}%`, funder: 'shows up on the coin' }[r.when];
+      const scope = { this: 'on this coin', held: 'on a coin I hold', any: 'on any coin I open' }[r.scope] || '';
+      const head = r.when === 'allout' ? `When all bundles together hold ≤ ${r.pct}% of supply` : `When ${f(BUNDLE_WHO[r.who] || BUNDLE_WHO.any)} ${when}`;
+      return `${head} ${scope}, ${f(BUNDLE_THEN[r.then] || r.then)}`;
+    }
 
     // ---- AG intel
     const metric = (o, k) => { if (!o) return null; const v = o[k]; return v == null || v === '' ? null : typeof v === 'object' ? num(v.value, v.v, v.now) : num(v); };
@@ -397,7 +514,8 @@
     return { num, escH, tail, sol, kfmt, usdV, unitLab, fmtM, agoS, msS, parseUsd, parseMc, scalePx, PUMP, isPump, supplyCost, buyImpact, curvePct, pickUnit,
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
       sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName,
-      riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue };
+      riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue,
+      clusterize, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, BUNDLE_MAX, ruleText };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
@@ -593,6 +711,7 @@
       stratId: null,     // exit strategy attached to buys (null = none)
       hotkeys: 'hover',  // 'on' | 'hover' (only while the pointer is over the widget) | 'off'
       kbHints: true,
+      bund: { open: true, view: 'list', rules: [], watch: [], bg: true }, // Trojan bundles panel, rules, watched funders
       intel: { on: false, open: true }, // AG Intel panel docked to the widget on coin pages (off by default; ⚙ → AG Intel)
       bar: true,         // holdings bar at the top of the page
       w: 380,            // widget width at 100% size: ≥ 600 switches to the wide (2-column) layout
@@ -622,6 +741,9 @@
     for (const m of st.hiddenCoins) if (!st.hiddenMeta[m]) st.hiddenMeta[m] = { t: Date.now(), n: null }; // hidden before 3.4: watch from now on
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
     st.filter = Object.assign({ mode: 'smart', native: false, after: 10 }, st.filter || {});
+    st.bund = Object.assign({ open: true, view: 'list', rules: [], watch: [], bg: true }, st.bund || {});
+    if (!Array.isArray(st.bund.rules)) st.bund.rules = [];
+    if (!Array.isArray(st.bund.watch)) st.bund.watch = [];
     if (!st.barHide || typeof st.barHide !== 'object') st.barHide = {};
     if (!['value', 'pnl', 'pct'].includes(st.barSort)) st.barSort = 'value';
     if (!Core.FILTER_MODES.includes(st.filter.mode)) st.filter.mode = 'smart';
@@ -1100,10 +1222,10 @@
       return execSell({ mint, pct, wallets: st.mode === 'paper' && !selected().length ? null : selected(), interactive: true });
     }
     // Sell initials: per wallet, sell just enough to take out what you put in (cost − already sold).
-    async function sellInit(mintArg) {
+    async function sellInit(mintArg, auto) { // auto: run by a rule, no confirm
       const mint = mintArg || getMint();
       if (!mint) return toast('Open a token first', true);
-      if (ui.busy) return;
+      if (ui.busy && !auto) return;
       let entries;
       if (mint === getMint()) { await loadPos(); entries = heldBy(); }
       else { await loadHeld(); entries = Object.entries((heldAll[mint] || {}).wallets || {}); }
@@ -1115,7 +1237,7 @@
       }
       const name = mint === getMint() ? sym : (heldAll[mint] || {}).sym || tail(mint);
       if (!plan.length) return toast('Sell initials: nothing to sell · ' + (skipped.join(' · ') || 'no position in the selected wallet(s)'), true);
-      if (st.mode === 'live') {
+      if (st.mode === 'live' && !auto) {
         const v = await ask({ tone: 'live', title: 'Sell initials', sub: `${name} · take your entry out, ride the rest`,
           lines: plan.map((x) => `${labelOf(x.w)} · sell ${x.pct}% ≈ ${sol(x.need)} ◎`), warn: skipped.length ? ['Skipped: ' + skipped.join('; ')] : [],
           actions: [{ label: 'Cancel', v: null, kind: 'ghost' }, { label: `Sell initials (${plan.length})`, v: 'go', kind: 'pri' }] });
@@ -1791,6 +1913,40 @@
     #agtw .intel.tab{width:30px;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0;background:#1A2012;color:var(--acc);font-size:10px}
     #agtw .intel.tab .v{writing-mode:vertical-rl;transform:rotate(180deg)}
     #agtw .intel.tab b{writing-mode:vertical-rl;transform:rotate(180deg);font-size:11px}
+    #agtw .intel.bund{width:340px;border-left-color:#5A4A1C}
+    #agtw .bhero{display:flex;gap:10px;align-items:center;border-radius:12px;padding:9px 10px;border:1px solid var(--ln);background:#1C1F25}
+    #agtw .bhero.bad{background:#2A1418;border-color:#5C2A33}#agtw .bhero.mid{background:#2A2412;border-color:#5A4A1C}#agtw .bhero.ok{background:#13261C;border-color:#24563C}
+    #agtw .bring{width:46px;height:46px;border-radius:46px;border:4px solid var(--mut2);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex:none;box-sizing:border-box}
+    #agtw .bhero.bad .bring{border-color:#B9505F;color:#FFC2C2}#agtw .bhero.mid .bring{border-color:#F2B84B;color:#FFE08A}#agtw .bhero.ok .bring{border-color:#4FAF7D;color:#CFF7E1}
+    #agtw .bhero.bad .ih b{color:var(--sell)}#agtw .bhero.mid .ih b{color:#FFE08A}#agtw .bhero.ok .ih b{color:var(--buy)}
+    #agtw .g4b{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}#agtw .g4b .itile{padding:5px 6px}#agtw .g4b .itile span{font-size:9px}
+    #agtw .bsup{display:flex;flex-direction:column;gap:4px}
+    #agtw .bbar{display:flex;height:8px;border-radius:6px;overflow:hidden;background:var(--ln2)}#agtw .bbar i{display:block;height:8px}
+    #agtw .bth{display:flex;gap:6px;font-size:9.5px;color:var(--mut2);letter-spacing:.06em;padding:0 2px}
+    #agtw .bc1{width:44px;text-align:right;flex:none}#agtw .bc2{width:70px;text-align:right;flex:none}#agtw .bc3{width:52px;text-align:right;flex:none}
+    #agtw .blist{display:flex;flex-direction:column}
+    #agtw .brow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:7px 2px;border-top:1px solid var(--ln2);text-align:left;width:100%}
+    #agtw .brow:hover{background:#1A1D22}
+    #agtw .bdot{width:8px;height:8px;border-radius:3px;flex:none;display:inline-block}
+    #agtw .bn2{display:flex;flex-direction:column;flex:1;min-width:0}#agtw .bn2 .sm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #agtw .bwn{background:var(--ln2);border-radius:5px;padding:0 4px;font-size:10px;color:#C9CDD4;white-space:nowrap}
+    #agtw .bund .g2 .btn{justify-content:center;white-space:normal;text-align:center;line-height:1.2;min-height:32px}
+    #agtw .bleft{flex-basis:100%;height:3px;border-radius:3px;background:var(--ln2);overflow:hidden;margin-left:14px}#agtw .bleft i{display:block;height:3px}
+    #agtw .mvp{font-size:9px;font-weight:700;letter-spacing:.04em;border-radius:5px;padding:1px 5px;background:var(--ln2);color:#C9CDD4;white-space:nowrap}
+    #agtw .mvp.dump{background:#5C1414;color:#FFC2C2}#agtw .mvp.acc{background:#163126;color:#8FE6B4}#agtw .mvp.watch{background:#221A3A;color:#D2C5FF}#agtw .mvp.exit{background:#1A1C21;color:var(--mut)}
+    #agtw .bfund{display:flex;align-items:center}
+    #agtw .bfn{display:flex;flex-direction:column;gap:2px;background:#221A3A;border:1px solid #5B47A8;border-radius:9px;padding:6px 8px;color:#D2C5FF;flex:none;max-width:120px}
+    #agtw .bln{flex:1;height:1px;background:#5B47A8;min-width:12px}
+    #agtw .bws{display:flex;flex-direction:column;gap:4px;width:150px;flex:none}
+    #agtw .bw{display:flex;gap:6px;background:var(--bg2);border:1px solid var(--ln);border-radius:7px;padding:3px 6px;font-size:11px}
+    #agtw .bchip{font-size:10.5px;border-radius:999px;padding:1px 8px;border:1px solid var(--ln);color:#C9CDD4}
+    #agtw .bchip.dn{background:#2A1418;border-color:#5C2A33;color:var(--sell)}#agtw .bchip.y{background:#2A2412;border-color:#5A4A1C;color:#FFE08A}#agtw .bchip.vi{background:#221A3A;border-color:#5B47A8;color:#D2C5FF}
+    #agtw .btl{display:flex;flex-direction:column;gap:5px}
+    #agtw .bev{display:flex;align-items:flex-start;gap:6px;font-size:11px}#agtw .bev>.n{width:30px;flex:none;font-size:10px}#agtw .bev .mvp{flex:none;width:44px;text-align:center}
+    #agtw .bform{display:flex;flex-direction:column;gap:7px;background:#1C1F25;border:1px solid var(--ln);border-radius:10px;padding:9px}
+    #agtw .bform select{width:100%}
+    #agtw .bsent{background:var(--bg3);border:1px solid var(--ln2);border-radius:8px;padding:7px 8px;color:#C9CDD4;line-height:1.4}
+    #agtw .intel.tab.bund{background:#2A2412;color:#FFE08A}
     #agtw .ihd{position:sticky;top:-10px;background:#15171B;margin:-10px -10px 0;padding:8px 10px;z-index:1;border-bottom:1px solid var(--ln2)}
     #agtw .ihero{display:flex;gap:10px;align-items:center;background:#1A2012;border:1px solid #4E6420;border-radius:12px;padding:10px}
     #agtw .iring{position:relative;width:56px;height:56px;flex:none}
@@ -1909,10 +2065,10 @@
     #agtw kbd{font:600 10px 'IBM Plex Mono',monospace;background:#24272E;border:1px solid #3A3F48;border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:#E6E8EC}
     #agtw .als{display:flex;flex-direction:column;gap:6px;padding:8px 12px 0}
     #agtw .al{border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;background:#1C1F25;border:1px solid #5A4A1C}
-    #agtw .al.dev{background:#2A1418;border-color:#B9505F}
+    #agtw .al.dev,#agtw .al.bundle{background:#2A1418;border-color:#B9505F}
     #agtw .al .g3 .btn{justify-content:center}
     #agtw .atag{font-size:9.5px;font-weight:700;letter-spacing:.08em;border-radius:5px;padding:1px 6px;background:#2A2412;color:#FFE08A;flex:none}
-    #agtw .al.dev .atag{background:#B9505F;color:#FFF0F2}
+    #agtw .al.dev .atag,#agtw .al.bundle .atag{background:#B9505F;color:#FFF0F2}
     #agtw .ab{display:flex;align-items:center;gap:6px}
     #agtw .alb{background:#B9505F;color:#fff;border-radius:999px;min-width:18px;height:18px;font-size:10px;font-weight:700;padding:0 5px}
     #agtw .shimg{width:100%;max-height:250px;object-fit:contain;background:#0B0D10;border-radius:10px;border:1px solid var(--ln)}
@@ -2273,7 +2429,7 @@
         if (site.nativeHide && Core.nativeDue(F, live, !!m, firstSeen.get(mint), now)) queueNative(mint);
         if (manual) { watchHidden(mint); continue; }
         if (act === 'hide') continue;
-        const ag = m && F.mode !== 'off' ? agChip(mint, m) : '';
+        const ag = (m && F.mode !== 'off' ? agChip(mint, m) : '') + tbBadge(mint) + tbCardChip(mint);
         if (!st.cards) { // overlay off: only the AG badge (if any)
           const c0 = hostEl.querySelector(':scope > .agtw-c');
           hostEl.classList.remove('agtw-held', 'agtw-dev', 'agtw-sig');
@@ -2389,6 +2545,271 @@
       document.addEventListener('visibilitychange', () => { if (!document.hidden) { scanCards(); loadHeld(); } });
       setInterval(() => { if ((st.hiddenCoins || []).length && st.unhideOnSignal) scanCards(); }, 10000); // hidden coins: signal check even on a quiet page
       loadHeld();
+    }
+
+    // ---------------------------------------------------------- Trojan bundles (Trojan tabs only)
+    // Data: Trojan's own POST /v1/tokens/bundled-positions (top holders of a coin, with funders). The widget reads the
+    // answers Trojan's page already gets (fetch / XHR hook), and replays that same request (same headers) for the coin
+    // on screen when the page didn't ask, and — one Trojan tab at a time (lease) — for the coins you hold, every 15s.
+    // Each answer → clusters (Core.clusterize) → a history point → built-in events (feed, badges) + your rules.
+    const TB = env === 'trojan', BP_PATH = '/v1/tokens/bundled-positions', TB_KEEP = 10 * 60e3;
+    const bsnap = {}; // mint → { at, rows, cl, sum, hist }
+    let bpTpl = null, bpFetch = null, tbBusy = false;
+    const tbMe = id();
+    const FEED_DEF = [ // built-in detectors for the feed, badges and the "last move" column (not actions)
+      { id: 'f-sell', who: 'any', when: 'sell', pct: 20, windowSec: 60 }, { id: 'f-exit', who: 'any', when: 'exit', pct: 90 },
+      { id: 'f-acc', who: 'any', when: 'acc', sol: 1, windowSec: 300 }, { id: 'f-send', who: 'any', when: 'send', windowSec: 60 },
+      { id: 'f-new', who: 'any', when: 'new', pct: 2 }, { id: 'f-out', who: 'any', when: 'allout', pct: 2 },
+    ];
+    const FEED_TAG = { sell: ['DUMP', 'dump'], exit: ['EXIT', 'exit'], acc: ['ACCUM', 'acc'], send: ['SPLIT', 'watch'], new: ['NEW', 'watch'], allout: ['ALL OUT', 'acc'], funder: ['FUNDER', 'watch'] };
+    const loadFeed = () => (GM_getValue('tbFeed', []) || []).filter((f) => Date.now() - f.at < 6 * 3600e3);
+    const shortA = (a) => (a ? a.slice(0, 4) + '…' + a.slice(-4) : '');
+    const bundlePx = (mint) => { const mc = mcapNow(mint); return mc > 0 && usdRate > 0 ? mc / usdRate / 1e9 : null; };
+    function hdrObj(h) {
+      const o = {};
+      try { if (!h) return o; if (typeof h.forEach === 'function' && !Array.isArray(h)) h.forEach((v, k) => { o[k] = v; }); else if (Array.isArray(h)) h.forEach(([k, v]) => { o[k] = v; }); else Object.assign(o, h); } catch (_) {}
+      return o;
+    }
+    function bpIngest(url, body, hdr, j, src) {
+      let mint = null;
+      try { mint = JSON.parse(body).tokenAddress; } catch (_) {}
+      if (!mint || !j || !Array.isArray(j.data)) return;
+      if (src === 'page') bpTpl = { url: new URL(url, location.href).href, hdr, body, at: Date.now() };
+      tbIngest(mint, j.data);
+    }
+    function tbIngest(mint, rows, now) {
+      now = now || Date.now();
+      const cl = Core.clusterize(rows, 1e9, bundlePx(mint)), s = bsnap[mint] || (bsnap[mint] = { hist: [] });
+      Object.assign(s, { at: now, rows, cl, sum: Core.bundleSummary(cl, rows), hist: Core.pushPoint(s.hist, Core.bundlePoint(cl, now), TB_KEEP) });
+      tbFeedScan(mint, s, now);
+      tbRules(mint, s, now);
+      if (mint === getMint() || st.bund.view === 'rules') render();
+      scanCardsSoon();
+    }
+    let scT = null;
+    const scanCardsSoon = () => { if (!scT) scT = setTimeout(() => { scT = null; scanCards(); renderBar(); }, 300); };
+    if (TB) {
+      const PW = unsafeWindow, of = PW.fetch;
+      bpFetch = (u, o) => of.call(PW, u, o);
+      PW.fetch = function (input, init) {
+        const p = of.apply(this, arguments);
+        try {
+          const url = typeof input === 'string' ? input : input && input.url;
+          if (url && String(url).includes(BP_PATH)) {
+            const body = init && typeof init.body === 'string' ? init.body : null, hdr = hdrObj((init && init.headers) || (input && input.headers));
+            p.then((r) => r.clone().json()).then((j) => bpIngest(url, body, hdr, j, 'page')).catch(() => {});
+          }
+        } catch (_) {}
+        return p;
+      };
+      const XP = PW.XMLHttpRequest && PW.XMLHttpRequest.prototype;
+      if (XP) {
+        const oo = XP.open, os = XP.send, oh = XP.setRequestHeader;
+        XP.open = function (m, u) { this.__agtwBp = String(u || '').includes(BP_PATH) ? { u, h: {} } : null; return oo.apply(this, arguments); };
+        XP.setRequestHeader = function (k, v) { if (this.__agtwBp) this.__agtwBp.h[k] = v; return oh.apply(this, arguments); };
+        XP.send = function (b) {
+          const x = this, c = x.__agtwBp;
+          if (c) x.addEventListener('load', () => { try { bpIngest(c.u, typeof b === 'string' ? b : null, c.h, JSON.parse(x.responseText), 'page'); } catch (_) {} });
+          return os.apply(this, arguments);
+        };
+      }
+    }
+    async function bpGet(mint) { // replay Trojan's request for another coin
+      if (!bpTpl || !bpFetch) return false;
+      let body;
+      try { body = JSON.stringify(Object.assign(JSON.parse(bpTpl.body), { tokenAddress: mint })); } catch (_) { return false; }
+      try {
+        const r = await bpFetch(bpTpl.url, { method: 'POST', headers: bpTpl.hdr, body, credentials: 'include' });
+        if (!r.ok) return false;
+        bpIngest(bpTpl.url, body, bpTpl.hdr, await r.json(), 'poll');
+        return true;
+      } catch (_) { return false; }
+    }
+    function tbLeader() {
+      const l = GM_getValue('tbLead', null), now = Date.now();
+      if (!l || now - l.at > 9000 || l.id === tbMe) { GM_setValue('tbLead', { id: tbMe, at: now }); return true; }
+      return false;
+    }
+    async function tbTick() {
+      if (!TB || tbBusy) return;
+      tbBusy = true;
+      try {
+        const cur = getMint(), now = Date.now();
+        // the coin on screen: Trojan normally asks itself; if it hasn't for 8s, ask for it
+        if (cur && !document.hidden && (!bsnap[cur] || now - bsnap[cur].at > 8000)) await bpGet(cur);
+        if (!st.bund.bg || !tbLeader()) return;
+        for (const m of Object.keys(heldAll).filter((x) => x !== cur && !pendingGone[x]).slice(0, 8)) {
+          if (bsnap[m] && Date.now() - bsnap[m].at < 12000) continue;
+          await bpGet(m);
+          await sleep(500);
+        }
+      } finally { tbBusy = false; }
+    }
+    // ---- feed (shared by every tab)
+    const feedSeen = {};
+    function tbFeedScan(mint, s, now) {
+      const sym0 = (heldAll[mint] || {}).sym || (mint === getMint() ? sym : '') || shortA(mint);
+      const add = [];
+      for (const d of FEED_DEF.concat(st.bund.watch.length ? [{ id: 'f-fund', who: 'funder', when: 'funder' }] : [])) {
+        for (const m of Core.bundleMatches(d, s.hist, s.cl, now, st.bund.watch)) {
+          const key = `${mint}:${m.id}:${m.kind}`;
+          if (now - (feedSeen[key] || 0) < (m.kind === 'funder' ? 30 * 60e3 : 180e3)) continue;
+          feedSeen[key] = now;
+          add.push({ at: now, mint, sym: sym0, id: m.id, kind: m.kind, text: m.text, pct: m.pct });
+        }
+      }
+      if (!add.length) return;
+      const f = loadFeed();
+      for (const a of add) if (!f.some((x) => x.mint === a.mint && x.id === a.id && x.kind === a.kind && a.at - x.at < 180e3)) f.push(a);
+      GM_setValue('tbFeed', f.slice(-40));
+    }
+    const lastMove = (mint, cid) => loadFeed().filter((f) => f.mint === mint && f.id === cid && Date.now() - f.at < 15 * 60e3).pop();
+    const coinMove = (mint) => loadFeed().filter((f) => f.mint === mint && Date.now() - f.at < 5 * 60e3 && (f.kind === 'sell' || f.kind === 'exit' || f.kind === 'allout')).pop();
+    // ---- rules: { id, on, who, minPct, funder, when, pct, sol, windowSec, scope, then, sellPct, buySol, mode, cooldownMin, once, fired, lastAt }
+    const RULE_DEF = () => ({ who: 'any', minPct: 5, funder: '', when: 'sell', pct: 30, sol: 1, windowSec: 60, scope: 'held', then: 'sell', sellPct: 100, buySol: 0.1, cooldownMin: 5, once: true });
+    function tbClaim(key, coolMs) { // cross-tab: one firing per key per cooldown
+      const f = GM_getValue('tbFired', {}) || {}, now = Date.now();
+      if (f[key] && now - f[key].at < coolMs) return false;
+      f[key] = { at: now, by: tbMe };
+      for (const k of Object.keys(f)) if (now - f[k].at > 86400e3) delete f[k];
+      GM_setValue('tbFired', f);
+      return true;
+    }
+    function tbRules(mint, s, now) {
+      for (const r of st.bund.rules) {
+        if (!r.on) continue;
+        if (r.scope === 'this' && mint !== getMint()) continue;
+        if (r.scope === 'held' && (!heldAll[mint] || pendingGone[mint])) continue;
+        const ms = Core.bundleMatches(r, s.hist, s.cl, now, st.bund.watch);
+        if (!ms.length) continue;
+        const m = ms[0], key = r.once ? `${r.id}:${mint}` : `${r.id}:${mint}:${m.id}`;
+        if (!tbClaim(key, r.once ? 86400e3 : Math.max(1, Number(r.cooldownMin) || 5) * 60e3)) continue;
+        tbAct(r, mint, m).catch((e) => console.warn('[AG widget] bundle rule', e));
+      }
+    }
+    async function tbAct(r, mint, m) {
+      const name = (heldAll[mint] || {}).sym || (mint === getMint() ? sym : '') || shortA(mint);
+      let did = '', ok = true;
+      if (r.then === 'sell' || r.then === 'init') {
+        if (!heldAll[mint]) { did = 'no position: nothing to sell'; ok = false; }
+        else if (r.mode !== st.mode) { did = `rule is ${r.mode.toUpperCase()}, widget is ${st.mode.toUpperCase()}: skipped`; ok = false; }
+        else if (r.then === 'sell') { const x = await execSell({ mint, symb: name, pct: Number(r.sellPct) || 100, mode: r.mode, interactive: false, label: 'bundle rule' }); ok = x.ok > 0; did = ok ? `sold ${r.sellPct}% on ${x.ok} wallet(s)` : `sell failed${x.err ? ': ' + x.err : ''}`; }
+        else { await sellInit(mint, true); did = 'sold initials'; }
+      } else if (r.then === 'buy') {
+        const ws = r.mode === 'live' ? (st.wallets.live || []).slice() : [null];
+        const x = await execBuy({ mint, symb: name, wallets: ws, amount: Number(r.buySol) || 0.1, split: st.buyMode === 'split', mode: r.mode, interactive: false, note: 'bundle rule', jitter: st.jitter });
+        ok = x.ok > 0; did = ok ? `bought ◎ ${sol(x.total)} (${r.mode})` : `buy skipped: ${x.err || 'failed'}`;
+      } else if (r.then === 'hide') { hideCoin(mint); scanCards(); did = 'coin hidden from lists'; }
+      r.fired = (r.fired || 0) + 1; r.lastAt = Date.now(); save();
+      pushAlert({ kind: 'bundle', key: `b:${r.id}:${mint}:${Math.round(Date.now() / 1000)}`, mint, sym: name,
+        title: `${FEED_TAG[m.kind] ? FEED_TAG[m.kind][0] : 'BUNDLE'} · ${name} · ${m.text}`, body: r.then === 'alert' ? Core.ruleText(r) : `Rule: ${did}`, ok });
+    }
+    function armRule(dr) {
+      const r = Object.assign(RULE_DEF(), dr, { id: id(), on: true, mode: dr.then === 'buy' && !dr.mode ? 'paper' : dr.mode || st.mode, fired: 0, created: Date.now() });
+      if (r.who === 'funder' && !r.funder && !st.bund.watch.length) return toast('Watch a funder first (open a bundle → Watch funder)', true);
+      return (async () => {
+        if (r.mode === 'live' && (r.then === 'sell' || r.then === 'buy' || r.then === 'init') && !(await ask({ tone: 'live', title: 'Arm LIVE bundle rule', sub: Core.ruleText(r),
+          note: 'Runs in your Trojan tab(s) with your AG wallets. Safety rails apply.', actions: [{ label: 'Cancel', v: null, kind: 'ghost' }, { label: 'Arm LIVE', v: 'go', kind: 'danger' }] }))) return;
+        st.bund.rules.push(r); save(); toast('Bundle rule armed'); render();
+      })();
+    }
+
+    // ---- views
+    function moveOf(mint, c) {
+      const f = lastMove(mint, c.id);
+      if (f) { const t = FEED_TAG[f.kind] || ['MOVE', 'hold']; return [f.kind === 'sell' ? `SOLD ${Math.round(f.pct || 0)}%` : t[0], t[1]]; }
+      if (c.left <= 0.1) return ['EXITED', 'exit'];
+      if (c.left < 0.98) return [`SOLD ${Math.round((1 - c.left) * 100)}%`, 'dump'];
+      return ['HOLDING', 'hold'];
+    }
+    const CL_COL = ['#F59AA6', '#D2C5FF', '#FFE08A', '#8FE6B4', '#7CB7FF', '#C9CDD4', '#F2B84B', '#86E1E8'];
+    function bundListHtml(mint, s) {
+      const S = s.sum, h = heldAll[mint], lv = { high: ['bad', 'high'], mid: ['mid', 'medium'], low: ['ok', 'low'] }[S.level];
+      const top = s.cl.find((c) => !c.hot), tm = top && lastMove(mint, top.id);
+      const rows = s.cl.filter((c) => !c.hot).slice(0, 12);
+      return `<div class="bhero ${lv[0]}"><div class="bring n">${S.risk}</div><div class="ih"><b>Bundle risk · ${lv[1]}</b>
+          <span>${S.clusters} bundle${S.clusters === 1 ? '' : 's'} still hold <b class="n">${S.held.toFixed(1)}%</b> of supply</span>
+          <span class="mut sm">${tm ? escH(tm.text) + ' · ' + agoS(Date.now() - tm.at) + ' ago' : `peak ${S.peak.toFixed(1)}%`}</span></div></div>
+        <div class="g4b">${[['BUNDLES', S.clusters, `${S.wallets} wallets`], ['STILL HOLD', S.held.toFixed(1) + '%', `peak ${S.peak.toFixed(1)}%`, S.held >= 15 ? 'dn' : ''],
+          ['SNIPERS', S.snipers, `${S.snipersOut} exited`], ['DEV-LINKED', S.dev, 'got dev tokens', S.dev ? 'y' : '']].map(([k, v, u, c]) => `<div class="itile"><span>${k}</span><b class="n ${c || ''}">${v}</b><small>${u}</small></div>`).join('')}</div>
+        <div class="bsup"><div class="pl n"><span>SUPPLY HELD BY BUNDLES</span><span>${S.held.toFixed(1)}%</span></div>
+          <div class="bbar">${rows.map((c, i) => `<i style="width:${Math.min(100, c.pct).toFixed(2)}%;background:${CL_COL[i % CL_COL.length]}"></i>`).join('')}</div></div>
+        ${rows.length ? `<div class="bth"><span class="sp">BUNDLE (FUNDER)</span><span class="bc1">HOLDS</span><span class="bc2">LAST MOVE</span><span class="bc3">PNL ◎</span></div>
+        <div class="blist">${rows.map((c, i) => { const [mv, k] = moveOf(mint, c); return `<button class="brow" data-bsel="${c.id}" title="Open this bundle">
+          <span class="bdot" style="background:${CL_COL[i % CL_COL.length]}"></span><span class="bn2"><span><b class="n">${shortA(c.id)}</b> <span class="bwn n">${c.n} wallets</span></span>
+          <span class="mut sm">${escH([c.bundled ? 'bundled' : '', c.sniper ? 'snipers' : '', c.dev ? 'dev-linked' : '', c.sameAmt ? `same funding ${c.fundAmt} ◎` : ''].filter(Boolean).join(' · ') || 'same funder')}</span></span>
+          <span class="bc1 n">${c.pct.toFixed(1)}%</span><span class="bc2"><span class="mvp ${k}">${escH(mv)}</span></span><span class="bc3 n ${c.pnl >= 0 ? 'up' : 'dn'}">${c.pnl >= 0 ? '+' : '−'}${sol(Math.abs(c.pnl))}</span>
+          <span class="bleft"><i style="width:${(c.left * 100).toFixed(0)}%;background:${CL_COL[i % CL_COL.length]}"></i></span></button>`; }).join('')}</div>` : '<div class="mut sm">No bundle among the top holders (no 2+ wallets with the same funder).</div>'}
+        ${h ? `<div class="iyou"><span class="lb">YOU</span><b class="n ${h.pnl >= 0 ? 'up' : 'dn'}">◎ ${sol(h.worth)} · ${h.pnl >= 0 ? '+' : '−'}${sol(Math.abs(h.pnl))}</b><span class="sp"></span>${st.bund.rules.some((r) => r.on && r.then === 'sell' && r.scope !== 'any') ? '<span class="ptag">armed: sell if they dump</span>' : ''}</div>` : ''}
+        <div class="g3 iact"><button class="btn" data-bq="dump" title="Rule: any bundle sells ≥ 30% within 60s on a coin I hold → sell 100%">Sell if they dump</button><button class="btn" data-bq="alert" title="Rule: any bundle sells ≥ 20% within 60s on a coin I hold → alert">Alert on moves</button><button class="btn" data-a="bview">Rules ›</button></div>`;
+    }
+    const tsMs = (t) => (t > 0 ? (t < 1e12 ? t * 1000 : t) : null);
+    function bundClusterHtml(mint, s, c) {
+      const i = s.cl.indexOf(c), col = CL_COL[i % CL_COL.length], [mv, k] = moveOf(mint, c), watched = st.bund.watch.includes(c.id);
+      const evs = loadFeed().filter((f) => f.mint === mint && f.id === c.id).map((f) => ({ t: f.at, kind: (FEED_TAG[f.kind] || ['MOVE'])[0], text: f.text }));
+      for (const w of c.wallets) {
+        if (tsMs(w.lastSell)) evs.push({ t: tsMs(w.lastSell), kind: 'SELL', text: `${shortA(w.addr)} last sell · has sold ${kfmt(w.sold)}` });
+        if (tsMs(w.lastBuy)) evs.push({ t: tsMs(w.lastBuy), kind: 'BUY', text: `${shortA(w.addr)} last buy · ◎ ${sol(w.spent)} in` });
+      }
+      evs.sort((a, b) => b.t - a.t);
+      return `<div class="sh"><button class="lk" data-bsel="">‹ Bundles</button><span class="bdot" style="background:${col}"></span><b class="n">${shortA(c.id)}</b><span class="bwn n">${c.n} wallets</span><span class="sp"></span><span class="mvp ${k}">${escH(mv)}</span></div>
+        <div class="g3s three"><div class="sb"><span class="lb">BOUGHT</span><span class="n v up">◎ ${sol(c.spent)}</span><span class="n u">${kfmt(c.inflow)} tokens</span></div>
+          <div class="sb"><span class="lb">SOLD</span><span class="n v dn">◎ ${sol(c.earned)}</span><span class="n u">${c.sells} sells</span></div>
+          <div class="sb"><span class="lb">PNL</span><span class="n v ${c.pnl >= 0 ? 'up' : 'dn'}">${c.pnl >= 0 ? '+' : '−'}${sol(Math.abs(c.pnl))} ◎</span><span class="n u">${c.value != null ? 'incl. ◎ ' + sol(c.value) + ' held' : 'realized'}</span></div></div>
+        <div class="bsup"><div class="pl n"><span>HOLDS ${c.pct.toFixed(1)}% OF SUPPLY</span><span>${(c.left * 100).toFixed(0)}% of its bag left</span></div><div class="bbar"><i style="width:${(c.left * 100).toFixed(0)}%;background:${col}"></i></div></div>
+        <span class="lb">FUNDING</span>
+        <div class="bfund"><div class="bfn"><b class="n">${shortA(c.id)}</b><span class="sm">funder${c.fundAmt ? ` · sent ${c.fundAmt} ◎ each` : ''}</span></div><i class="bln"></i>
+          <div class="bws">${c.wallets.slice(0, 8).map((w) => `<div class="bw"><span class="n">${shortA(w.addr)}</span><span class="sp"></span><span class="n ${w.bal > 0 ? '' : 'mut'}">${c.bal > 0 ? ((w.bal / c.bal) * 100).toFixed(0) + '%' : 'out'}</span></div>`).join('')}${c.wallets.length > 8 ? `<span class="mut sm">+${c.wallets.length - 8} more</span>` : ''}</div></div>
+        <div class="chips">${[c.bundled && ['bundled at launch', 'dn'], c.sameAmt && [`same funding amount (${c.fundAmt} ◎)`, 'dn'], c.sniper && ['snipers', 'y'], c.dev && ['got tokens from the dev / insiders', 'y'], watched && ['watched funder', 'vi']].filter(Boolean).map(([t, cc]) => `<span class="bchip ${cc}">${escH(t)}</span>`).join('')}</div>
+        <span class="lb">WHAT IT DID</span>
+        <div class="btl">${evs.slice(0, 8).map((e) => `<div class="bev"><span class="n mut">${agoS(Date.now() - e.t)}</span><span class="mvp ${e.kind === 'BUY' || e.kind === 'ACCUM' ? 'acc' : e.kind === 'SELL' || e.kind === 'DUMP' ? 'dump' : 'watch'}">${escH(e.kind)}</span><span>${escH(e.text)}</span></div>`).join('') || '<span class="mut sm">Nothing yet.</span>'}</div>
+        <div class="g2"><button class="btn danger" data-bsell="${mint}" ${heldAll[mint] ? '' : 'disabled'}>Sell my bag · 100%</button><button class="btn" data-brule="${c.id}">⚡ Rule for this bundle</button>
+          <button class="btn" data-bwatch="${c.id}">${watched ? 'Unwatch funder' : 'Watch funder everywhere'}</button><button class="btn" data-cp="${c.id}">Copy funder</button></div>`;
+    }
+    function bundRulesHtml(mint) {
+      const d = ui.bdraft || (ui.bdraft = RULE_DEF()), opt = (k, list) => `<select data-bf="${k}" aria-label="${k}">${list.map(([v, l]) => `<option value="${v}" ${String(d[k]) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+      const n = (k, label, step) => `<label>${label}<input class="n" type="number" step="${step || 'any'}" data-bf="${k}" value="${escH(d[k])}"></label>`;
+      const needs = { sell: ['pct', 'windowSec'], exit: ['pct'], acc: ['sol', 'windowSec'], send: ['windowSec'], new: ['pct'], allout: ['pct'], funder: [] }[d.when] || [];
+      const preview = Object.assign({}, d, { mode: d.then === 'buy' ? (d.mode || 'paper') : st.mode });
+      const feed = loadFeed().slice(-8).reverse();
+      return `<div class="sh"><button class="lk" data-a="bview">‹ Bundles</button><b>Rules</b><span class="sp"></span><span class="mut sm">run in this Trojan tab</span></div>
+        <div class="bform"><div class="eg two"><label>When${opt('who', [['any', 'any bundle'], ['top3', 'a top-3 bundle'], ['min', 'a bundle holding ≥ X%'], ['dev', 'a dev-linked bundle'], ['snipers', 'a sniper bundle'], ['funder', 'a watched funder']])}</label>
+          <label>does${opt('when', [['sell', 'sells part of its bag'], ['exit', 'is out (sold most of it)'], ['acc', 'accumulates (buys more)'], ['send', 'sends tokens to wallets'], ['new', 'appears (new bundle)'], ['allout', 'ALL bundles are out'], ['funder', 'shows up on a coin']])}</label></div>
+          <div class="eg">${d.who === 'min' ? n('minPct', 'holding ≥ %', 0.5) : ''}${needs.includes('pct') ? n('pct', d.when === 'sell' ? 'sold ≥ % of bag' : d.when === 'exit' ? 'sold ≥ % overall' : d.when === 'allout' ? 'all hold ≤ % supply' : 'holds ≥ %', 1) : ''}${needs.includes('sol') ? n('sol', 'bought ≥ ◎', 0.1) : ''}${needs.includes('windowSec') ? n('windowSec', 'within (s)', 5) : ''}</div>
+          <div class="eg two"><label>On${opt('scope', [['this', 'this coin'], ['held', 'coins I hold'], ['any', 'any coin I open']])}</label>
+          <label>Then${opt('then', [['alert', 'alert me'], ['sell', 'sell X% of my bag'], ['init', 'sell my initials'], ['hide', 'hide the coin'], ['buy', 'buy ◎ (reverse)']])}</label></div>
+          <div class="eg">${d.then === 'sell' ? n('sellPct', 'sell %', 5) : ''}${d.then === 'buy' ? n('buySol', 'buy ◎', 0.05) + `<label>Mode${opt('mode', [['paper', 'paper'], ['live', 'LIVE']])}</label>` : ''}${n('cooldownMin', 'cooldown (min)', 1)}<label class="ck"><input type="checkbox" data-bf="once" ${d.once ? 'checked' : ''}>once per coin</label></div>
+          <div class="bsent">${escH(Core.ruleText(preview))}${d.when === 'sell' && d.scope === 'any' && d.then === 'sell' ? ' <span class="mut">(only where you hold it)</span>' : ''}</div>
+          <button class="btn arm ${d.then === 'sell' || d.then === 'init' ? 'sellc' : ''}" data-a="barm">Arm rule${(d.then === 'buy' ? preview.mode : st.mode) === 'live' && d.then !== 'alert' && d.then !== 'hide' ? ' · LIVE' : ''}</button></div>
+        <div class="sh"><b class="sm2">Armed</b><span class="sp"></span><span class="mut sm">${st.bund.rules.length} rule${st.bund.rules.length === 1 ? '' : 's'}</span></div>
+        ${st.bund.rules.map((r) => `<div class="trw"><div class="orr"><span class="otag ${r.then === 'sell' || r.then === 'init' ? 'tpmc' : r.then === 'buy' ? 'dip' : 'trail'}">${{ sell: 'SELL', init: 'INIT', buy: 'BUY', hide: 'HIDE', alert: 'ALERT' }[r.then]}</span><span class="ol" title="${escH(Core.ruleText(r))}">${escH(Core.ruleText(r))}</span><span class="sp"></span>
+          <label class="ck" title="On / off"><input type="checkbox" data-btog="${r.id}" ${r.on ? 'checked' : ''}></label><button class="xx" data-bdel="${r.id}" aria-label="Delete rule">×</button></div>
+          <div class="pl n"><span>${r.mode.toUpperCase()} · fired ${r.fired || 0}×${r.lastAt ? ' · last ' + agoS(Date.now() - r.lastAt) + ' ago' : ''}</span><span>${r.once ? 'once per coin' : 'cooldown ' + r.cooldownMin + ' min'}</span></div></div>`).join('') || '<div class="mut sm">No rule yet.</div>'}
+        <div class="sh"><b class="sm2">Feed</b><span class="sp"></span><span class="mut sm">${st.bund.bg ? (bpTpl ? 'watching coins you hold' : 'open any coin once to watch the coins you hold') : 'background watch off'}</span></div>
+        ${feed.map((f) => `<div class="bev"><span class="n mut">${agoS(Date.now() - f.at)}</span><span class="mvp ${(FEED_TAG[f.kind] || ['', 'watch'])[1]}">${(FEED_TAG[f.kind] || ['MOVE'])[0]}</span><button class="lk2" data-open="${f.mint}">${escH(f.sym || shortA(f.mint))}</button><span>${escH(f.text)}</span></div>`).join('') || '<span class="mut sm">No bundle move seen yet.</span>'}
+        <label class="ck"><input type="checkbox" data-s="bund.bg" ${st.bund.bg ? 'checked' : ''}>Also watch the coins I hold in the background (every 15s, one Trojan tab)</label>`;
+    }
+    function bundHtml() {
+      if (!TB || ui.edit) return '';
+      const mint = getMint(), s = mint && bsnap[mint], B = st.bund, on = B.rules.filter((r) => r.on).length;
+      if (!B.open) return `<button class="intel tab bund" data-a="bund" title="Show bundles"><span class="agt v">BUNDLES</span>${s ? `<b class="n">${s.sum.held.toFixed(0)}%</b><i class="dot" style="background:${s.sum.level === 'high' ? '#F59AA6' : s.sum.level === 'mid' ? '#FFE08A' : '#8FE6B4'}"></i>` : ''}</button>`;
+      const c = s && ui.bundSel ? s.cl.find((x) => x.id === ui.bundSel) : null;
+      const body = B.view === 'rules' ? bundRulesHtml(mint)
+        : !mint ? `<div class="mut sm">Open a coin: bundles come from Trojan's holders list.</div>${loadFeed().length ? '<button class="btn" data-a="bview">Rules & feed ›</button>' : ''}`
+        : !s ? `<div class="mut sm">Waiting for Trojan's holders data…${bpTpl ? '' : ' If nothing comes, open the Holders tab of this coin once.'}</div>`
+        : c ? bundClusterHtml(mint, s, c) : bundListHtml(mint, s);
+      return `<div class="intel bund"><div class="ii"><div class="sh ihd"><span class="agt">BUNDLES</span><b>${escH(mint ? sym || tail(mint) : '')}</b><span class="sp"></span>${s ? `<span class="lvd"></span><span class="mut n sm">${agoS(Date.now() - s.at)}</span>` : ''}
+        <button class="ib ord ${on ? 'has' : ''} ${B.view === 'rules' ? 'on' : ''}" data-a="bview" title="Bundle rules">${ICON.bolt}<span class="n">${on || ''}</span></button><button class="ib" data-a="bund" title="Collapse">${ICON.chev}</button></div>${body}</div></div>`;
+    }
+    function tbBadge(mint) { // holdings bar / cards: a bundle just dumped on this coin
+      if (!TB) return '';
+      const f = coinMove(mint);
+      return f ? `<span class="tbd" title="${escH(f.text)}">BUNDLE ${f.kind === 'sell' ? '−' + Math.round(f.pct || 0) + '%' : f.kind === 'allout' ? 'OUT' : 'EXIT'}</span>` : '';
+    }
+    function tbCardChip(mint) {
+      const s = TB && bsnap[mint];
+      if (!s || Date.now() - s.at > 10 * 60e3 || !s.sum.clusters) return '';
+      return `<span class="tbc ${s.sum.level}" title="${s.sum.clusters} bundles hold ${s.sum.held.toFixed(1)}% · risk ${s.sum.risk}">BUNDLES ${s.sum.held.toFixed(0)}%</span>`;
     }
 
     let el;
@@ -2563,7 +2984,7 @@
         ${rows.map((r) => `<div class="bc ${r.mint === getMint() ? 'cur' : ''} ${st.barHide[r.mint] ? 'hid' : ''}"><button class="bn" data-bar="open" data-m="${r.mint}" title="${escH(tip(r))}">
           <span class="bi">${escH(r.sym.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?')}</span><span class="bsym">${escH(r.sym)}</span>
           <span class="bv">◎ ${sol(r.worth)}</span>
-          <span class="bp ${r.pnl >= 0 ? 'up' : 'dn'}">◎ ${r.pnl >= 0 ? '+' : '−'}${sol(Math.abs(r.pnl))} (${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%)</span></button>
+          ${tbBadge(r.mint)}<span class="bp ${r.pnl >= 0 ? 'up' : 'dn'}">◎ ${r.pnl >= 0 ? '+' : '−'}${sol(Math.abs(r.pnl))} (${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%)</span></button>
           <button class="bx ${armed === r.mint ? 'arm' : ''}" data-bar="sell" data-m="${r.mint}" title="${st.barOneClick ? 'Sell 100% from every wallet holding it' : 'Click twice to sell 100% from every wallet holding it'}" ${ui.busy ? 'disabled' : ''}>${armed === r.mint ? 'Sure? 100%' : '⚡ 100%'}</button>
           <button class="bh" data-bar="${st.barHide[r.mint] ? 'unhide' : 'hide'}" data-m="${r.mint}" title="${st.barHide[r.mint] ? 'Show it in the bar again' : 'Hide this position from the bar (it comes back if you buy it again after closing it)'}">${st.barHide[r.mint] ? '↺' : '×'}</button></div>`).join('')}
         ${hidN ? `<button class="bmore" data-bar="showhid" title="${barShowHidden ? 'Hide them again' : 'Show the positions you hid'}">${barShowHidden ? 'done' : '+' + hidN + ' hidden'}</button>` : ''}</div>
@@ -2637,7 +3058,7 @@
       const ae0 = document.activeElement, typing = ae0 && el.contains(ae0) && ae0.tagName === 'SELECT'; // an open <select> would close
       if (typing) return;
       const html = ui.collapsed ? collapsedHtml() : fullHtml();
-      const full = `<div class="in">${html}</div>${ui.collapsed ? '' : intelHtml()}${modalHtml()}<div class="rw" title="Drag to change the width · double-click to reset (wide = 2 columns)"></div><div class="rz" title="Drag to resize · double-click to reset"></div>`;
+      const full = `<div class="in">${html}</div>${ui.collapsed ? '' : intelHtml() + bundHtml()}${modalHtml()}<div class="rw" title="Drag to change the width · double-click to reset (wide = 2 columns)"></div><div class="rz" title="Drag to resize · double-click to reset"></div>`;
       if (full !== el.__html) { el.__html = full; patch(el, full); el.classList.toggle('col', ui.collapsed); el.classList.toggle('wide', !ui.collapsed && !ui.edit && wideOn()); fit(); }
       el.classList.toggle('col', ui.collapsed);
     }
@@ -3169,12 +3590,19 @@
       if (!t) return;
       const d = t.dataset;
       if (d.mv != null && ui.modal) { const a = ui.modal.actions[+d.mv]; return closeModal(a ? a.v : null); }
-      if (d.s || d.se === 'be' || d.tf === 'attach') return; // checkboxes → onChange
+      if (d.s || d.se === 'be' || d.tf === 'attach' || d.bf) return; // checkboxes → onChange
       if (d.bu) return buyUnitAmt(d.bu);
       if (d.su) return st.sellUnit === 'sol' ? sellSol(d.su) : sell(d.su);
       if (d.su2) return sell(d.su2);
       if (d.ha) return healthAct(d.ha);
       if (d.oc) return cancelOrder(d.oc);
+      if (d.bsel != null && TB) { ui.bundSel = d.bsel || null; return render(); }
+      if (d.bwatch) { const w = st.bund.watch; if (w.includes(d.bwatch)) st.bund.watch = w.filter((x) => x !== d.bwatch); else w.push(d.bwatch); save(); toast(w.includes(d.bwatch) ? 'Funder watched on every coin you open or hold' : 'Funder unwatched'); return render(); }
+      if (d.brule) { ui.bdraft = Object.assign(RULE_DEF(), { who: 'funder', funder: d.brule, scope: 'any', then: 'alert' }); st.bund.view = 'rules'; if (!st.bund.watch.includes(d.brule)) st.bund.watch.push(d.brule); save(); return render(); }
+      if (d.bsell) return execSell({ mint: d.bsell, symb: (heldAll[d.bsell] || {}).sym, pct: 100, interactive: true });
+      if (d.bq) { return armRule(d.bq === 'dump' ? { who: 'any', when: 'sell', pct: 30, windowSec: 60, scope: 'held', then: 'sell', sellPct: 100, cooldownMin: 5, once: true } : { who: 'any', when: 'sell', pct: 20, windowSec: 60, scope: 'held', then: 'alert', cooldownMin: 5, once: false }); }
+      if (d.btog) { const r = st.bund.rules.find((x) => x.id === d.btog); if (r) { r.on = !r.on; save(); } return render(); }
+      if (d.bdel) { st.bund.rules = st.bund.rules.filter((x) => x.id !== d.bdel); save(); return render(); }
       if (d.g) return useGroup(d.g);
       if (d.gd) return delGroup(d.gd);
       if (d.cpm) return copy(d.cpm, 'mint');
@@ -3227,6 +3655,9 @@
       }
       switch (a) {
         case 'panelx': ui.panel = null; return render();
+        case 'bund': st.bund.open = !st.bund.open; save(); return render();
+        case 'bview': st.bund.view = st.bund.view === 'rules' ? 'list' : 'rules'; ui.bundSel = null; save(); return render();
+        case 'barm': { const d = Object.assign({}, ui.bdraft || RULE_DEF()); if (d.then !== 'buy') delete d.mode; ui.bdraft = null; return armRule(d); }
         case 'barreset': st.barBox = null; st.barHide = {}; save(); renderBar(); return render();
         case 'intel': st.intel.open = !st.intel.open; save(); if (st.intel.open) loadIntel(getMint()); return render();
         case 'intelr': loadIntel(getMint(), true); return;
@@ -3282,6 +3713,7 @@
       if (d.e) { ui.draft[draftKey(d.e)] = tv; return; }
       if (d.f && ui.plan) { ui.plan[d.f] = tv; e.target.blur(); return render(); }
       if (d.tf) { ui.tf[d.tf] = e.target.type === 'checkbox' ? e.target.checked : tv; return render(); }
+      if (d.bf) { const b = ui.bdraft || (ui.bdraft = RULE_DEF()); b[d.bf] = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? Number(tv) : tv; return render(); }
       if (d.se && ui.stratEdit) {
         const [k, i] = d.se.split(':');
         if (i != null) ui.stratEdit.levels[+i][k] = k === 't' ? tv : tv;
@@ -3312,6 +3744,7 @@
       else if (d.s === 'unhideOnSignal') { st.unhideOnSignal = ch; save(); }
       else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
+      else if (d.s === 'bund.bg') st.bund.bg = ch;
       else if (d.s === 'flt.native') { st.filter.native = ch; save(); scanCards(); }
       else if (d.s === 'flt.after') st.filter.after = Math.max(0, v || 0);
       else if (d.s === 'confirmAbove') st.confirmAbove = v || 0;
@@ -3454,7 +3887,7 @@
     function alertsHtml() {
       const all = loadAlerts().filter((a) => !ui.alertsGone[a.id]), list = all.slice(-2).reverse();
       if (!list.length) return '';
-      return `<div class="als">${all.length > 2 ? `<div class="sh mut sm">${all.length - 2} older alert${all.length > 3 ? 's' : ''} hidden<span class="sp"></span><button class="lk" data-a="alclear">Clear all</button></div>` : ''}${list.map((a) => `<div class="al ${a.kind}"><div class="sh"><span class="atag">${{ dev: 'DEV SELL', whale: 'WHALE', move: 'MOVE' }[a.kind] || 'ALERT'}</span><b>${escH(a.title)}</b><span class="sp"></span><span class="n mut sm">${Math.max(0, Math.round((Date.now() - a.at) / 1000))}s</span></div>
+      return `<div class="als">${all.length > 2 ? `<div class="sh mut sm">${all.length - 2} older alert${all.length > 3 ? 's' : ''} hidden<span class="sp"></span><button class="lk" data-a="alclear">Clear all</button></div>` : ''}${list.map((a) => `<div class="al ${a.kind}"><div class="sh"><span class="atag">${{ dev: 'DEV SELL', whale: 'WHALE', move: 'MOVE', bundle: 'BUNDLE' }[a.kind] || 'ALERT'}</span><b>${escH(a.title)}</b><span class="sp"></span><span class="n mut sm">${Math.max(0, Math.round((Date.now() - a.at) / 1000))}s</span></div>
         <div class="sm">${escH(a.body)}</div>
         ${a.kind === 'dev' && !a.auto ? `<div class="g3"><button class="btn danger" data-alsell="${a.mint}">Sell 100%</button><button class="btn" data-alinit="${a.mint}">Sell init</button><button class="btn ghost" data-alx="${a.id}">Dismiss</button></div>`
           : `<div class="ab"><button class="lk" data-open="${a.mint}">Open</button><span class="sp"></span><button class="btn sm ghost" data-alx="${a.id}">Dismiss</button></div>`}</div>`).join('')}</div>`;
@@ -3647,9 +4080,10 @@
       GM_addValueChangeListener('twAlerts', (_k, _o, v, remote) => { if (remote) for (const a of v || []) showAlert(a); render(); });
       setInterval(() => { if (!document.hidden && (loadAlerts().length || ui.panel === 'trig')) render(); }, 1000);
       try { startStream(); } catch (e) { console.warn('[AG widget] live stream', e); }
+      if (TB) { setInterval(() => { tbTick().catch(() => {}); }, 3000); GM_addValueChangeListener('tbFeed', (_k, _o, _v, remote) => { if (remote) { render(); scanCardsSoon(); } }); }
       try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { bsnap, tbIngest, bpTpl: () => bpTpl, agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s
