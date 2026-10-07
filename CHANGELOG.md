@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.12.1
+- Bundles: the coin's **pool** (pump.fun bonding curve, or the AMM pool after migration) is no longer listed as a
+  bundle. It is the #1 holder and its two Trojan rows differ, so it looked like one. It's skipped when Trojan flags it
+  as the reserve owner, or when a wallet never buys or sells but moves tokens in and out on every trade. Applies to
+  both groupings, the summary, rules and badges.
+
 ## 3.12.0
 - Bundles panel: a **grouping switch** — *Trojan's bundles* (default, Trojan's own linking, as in 3.11) or *Same first
   funder* (the 3.10 way: 2+ wallets fed by the same first funder, from the wallet rows; shows same-funding-amount and

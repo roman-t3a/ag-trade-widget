@@ -515,8 +515,12 @@ async function main() {
         amountTokensSold: 0, amountNativeSpent: o.spent ?? 1, amountNativeEarned: o.earned ?? 0, numBuys: o.buys ?? 1, numSells: 0, numTransfersOut: 0, amountSniped: o.sniped ?? 0, amountBundled: 0,
         amountReceivedFromDev: o.dev ?? 0, amountReceivedFromInsider: 0, lastBuyTimestamp: Math.floor(Date.now() / 1000) - 600, lastSellTimestamp: 0,
         fundingInfo: { walletAddress: w, firstNativeFunderAddress: 'Fund' + w.slice(4), firstNativeFundingAmount: 1 } });
-      const mk = (a, b) => ({ bp: [wr(LONE, 80e6), wr(F1, a, { bought: 60e6, buys: 10, sniped: 1, spent: 2 }), wr(F2, b, { bought: 30e6, buys: 8, dev: 3 })],
-        pos: [wr(LONE, 80e6), wr(F1, Math.round(a / 4), { buys: 2 }), wr(F2, Math.round(b / 3), { buys: 3 }),
+      // the coin's pool (bonding curve): #1 holder, flagged by Trojan, no trades, and its two rows differ → must never be a bundle
+      const POOL = '8Z2uyYPoolDDDDDDDDDDDDDDDDDDDDDDDDDDDDDbaP4';
+      const pool = (bal) => Object.assign(wr(POOL, bal, { bought: 0, buys: 0, spent: 0 }), { isReserveAccountsOwner: true, numTransfersIn: 1477, numTransfersOut: 1824,
+        fundingInfo: { firstNativeFunderAddress: 'SharedFunderFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', firstNativeFundingAmount: 2 } });
+      const mk = (a, b) => ({ bp: [pool(178e6), wr(LONE, 80e6), wr(F1, a, { bought: 60e6, buys: 10, sniped: 1, spent: 2 }), wr(F2, b, { bought: 30e6, buys: 8, dev: 3 })],
+        pos: [pool(134e6), wr(LONE, 80e6), wr(F1, Math.round(a / 4), { buys: 2 }), wr(F2, Math.round(b / 3), { buys: 3 }),
           Object.assign(wr('Sib1eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 6e6), { fundingInfo: { firstNativeFunderAddress: 'SharedFunderFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', firstNativeFundingAmount: 2 } }),
           Object.assign(wr('Sib2ffffffffffffffffffffffffffffffffffffffff', 4e6), { fundingInfo: { firstNativeFunderAddress: 'SharedFunderFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', firstNativeFundingAmount: 2 } })] });
       const bp = { [MINT]: mk(60e6, 30e6), [MINT2]: mk(10e6, 2e6) }, seen = [];
@@ -544,6 +548,7 @@ async function main() {
       const dock = () => t.page.evaluate(() => (document.querySelector('#agtw .bund') || {}).innerText || '');
       let d = await dock();
       ok('Trojan: bundles = Trojan\'s own grouping (2 bundles, 9% held; the lone 8% wallet is not one)', /BUNDLES/.test(d) && /2 bundles still hold\s*9\.0%/.test(d.replace(/\s+/g, ' ')), d.replace(/\s+/g, ' ').slice(0, 200));
+      ok('Trojan: the bonding-curve pool (#1 holder, 17.8%) is not listed as a bundle', !/8Z2u/.test(d) && !/17\.8%|13\.4%/.test(d), d.replace(/\s+/g, ' ').slice(0, 300));
       ok('Trojan: bundle rows use Trojan\'s name + wallet count from its table, share held, flags', /GZVS\.\.\.LM9b/.test(d) && /5 wallets/.test(d) && /6\.0%/.test(d) && /dev-linked/.test(d) && /high confidence/.test(d), d.replace(/\s+/g, ' ').slice(200, 600));
       await t.page.screenshot({ path: `${OUT}/30-bundles-panel.png` });
       // grouping switch: same first funder (3.10 way) → only the 2 wallets fed by SharedFunder are a bundle

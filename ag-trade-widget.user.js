@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.12.0
+// @version      3.12.1
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -207,10 +207,21 @@
     // wallet isn't in the top 100 alone), or when Trojan's table lists it as one (`meta`: id → { label, n, conf,
     // wallets }, read from the page while the holders table is on screen). Amounts are in token units; `supply`
     // (default 1B, pump.fun) → % of supply; `px` (SOL per token, optional) values what is still held.
+    // The coin's pool (pump.fun bonding curve, or the AMM pool after migration) shows up as the #1 holder. It is not a
+    // trader: Trojan flags it `isReserveAccountsOwner`; without the flag it still never buys or sells, it only moves
+    // tokens in and out on every trade. Never a bundle, never a cluster wallet.
+    const POOL_XFERS = 50;
+    function isPoolRow(r) {
+      if (!r) return false;
+      if (r.isReserveAccountsOwner === true) return true;
+      const z = (k) => !(num(r[k]) > 0);
+      return z('numBuys') && z('numSells') && z('amountNativeSpent') && z('amountNativeEarned')
+        && (num(r.numTransfersIn) || 0) + (num(r.numTransfersOut) || 0) >= POOL_XFERS;
+    }
     function trojanBundles(bp, pos, meta, supply, px) {
       const sup = num(supply) > 0 ? num(supply) : 1e9, M = meta || {}, own = pos ? new Map(pos.filter(Boolean).map((p) => [p.walletAddress, p])) : null, out = [];
       for (const r of bp || []) {
-        if (!r || !r.walletAddress) continue;
+        if (!r || !r.walletAddress || isPoolRow(r)) continue;
         const m = M[r.walletAddress], p = own && own.get(r.walletAddress), bal = num(r.currentTokenBalance) || 0;
         const agg = m ? (m.n == null || m.n > 1) : own ? (!p || Math.abs((num(p.currentTokenBalance) || 0) - bal) > Math.max(1, bal * 0.001) || (num(p.numBuys) || 0) !== (num(r.numBuys) || 0)) : false;
         if (!agg) continue;
@@ -232,9 +243,9 @@
     function trojanMeta(rows) {
       const out = {};
       for (const r of rows || []) {
-        if (!r || r.type !== 'aggregate' || typeof r.id !== 'string') continue;
+        if (!r || r.type !== 'aggregate' || typeof r.id !== 'string' || isPoolRow(r.metrics)) continue;
         const id = (r.metrics && r.metrics.walletAddress) || r.id.replace(/^aggregate-/, '');
-        const kids = Array.isArray(r.children) ? r.children.map((c) => (c && (c.metrics || c.position)) || c).filter((c) => c && c.walletAddress) : [];
+        const kids = Array.isArray(r.children) ? r.children.map((c) => (c && (c.metrics || c.position)) || c).filter((c) => c && c.walletAddress && !isPoolRow(c)) : [];
         // the members list may or may not include the primary wallet: count it once
         const prim = r.primaryWalletAddress, n = kids.length ? kids.length + (prim && !kids.some((k) => k.walletAddress === prim) ? 1 : 0) : null;
         out[id] = { label: r.walletLabel || null, n, conf: r.bundlerConfidence || null, wallets: kids };
@@ -249,7 +260,7 @@
       const sup = num(supply) > 0 ? num(supply) : 1e9, by = {};
       for (const r of rows || []) {
         const f = r && r.fundingInfo && r.fundingInfo.firstNativeFunderAddress;
-        if (!f || !r.walletAddress) continue;
+        if (!f || !r.walletAddress || isPoolRow(r)) continue;
         (by[f] = by[f] || []).push(r);
       }
       const out = [];
@@ -277,6 +288,7 @@
     // whole-coin view: what the bundles still hold + a 0-100 risk (held share, dev links, snipers, sell pressure)
     function bundleSummary(cl, rows, supply) {
       const sup = num(supply) > 0 ? num(supply) : 1e9, real = (cl || []).filter((c) => !c.hot);
+      rows = (rows || []).filter((r) => !isPoolRow(r));
       const held = real.reduce((a, c) => a + c.pct, 0), peak = real.reduce((a, c) => a + (c.inflow / sup) * 100, 0);
       const snipers = (rows || []).filter((r) => num(r.amountSniped) > 0), dev = (rows || []).filter((r) => num(r.amountReceivedFromDev) > 0);
       const sold = real.length ? real.reduce((a, c) => a + (1 - c.left) * c.inflow, 0) / Math.max(1, real.reduce((a, c) => a + c.inflow, 0)) : 0;
@@ -556,7 +568,7 @@
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
       sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName,
       riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue,
-      trojanBundles, trojanMeta, clusterize, BUNDLE_MAX, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, ruleText };
+      trojanBundles, trojanMeta, isPoolRow, clusterize, BUNDLE_MAX, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, ruleText };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }

@@ -208,3 +208,45 @@ test.describe('same-first-funder grouping (option)', () => {
     assert.deepEqual(C.bundleMatches(R({}), h, C.clusterize(after), 30000).map((x) => x.id), [F1]);
   });
 });
+
+test.describe('the coin\'s pool (bonding curve / AMM) is never a bundle', () => {
+  const P = '8Z2uyYPoolDDDDDDDDDDDDDDDDDDDDDDDDDDDDDbaP4', F1 = 'u6PJFunderAAAAAAAAAAAAAAAAAAAAAAAAAAAAXq2w';
+  // as seen live on Trojan: flagged reserve owner, no buys / sells, thousands of transfers, and its bundled-positions
+  // balance differs from its positions balance (which used to make it look like a bundle)
+  const pool = (bal, o = {}) => Object.assign(row(P, bal, { bought: 0, buys: 0, spent: 0 }),
+    { isReserveAccountsOwner: true, amountTokensReceived: 2.05e9, numTransfersIn: 1477, numTransfersOut: 1824, fundingInfo: { firstNativeFunderAddress: F1, firstNativeFundingAmount: 0.01 } }, o);
+  test('isPoolRow: the flag, or a no-trade wallet that only churns transfers', () => {
+    assert.equal(C.isPoolRow(pool(178e6)), true);
+    assert.equal(C.isPoolRow(pool(178e6, { isReserveAccountsOwner: undefined })), true, 'no flag: still the pool by its shape');
+    assert.equal(C.isPoolRow(row(B1, 5e6)), false, 'a trader');
+    assert.equal(C.isPoolRow(Object.assign(row(L, 5e6, { buys: 0, bought: 0, spent: 0 }), { numTransfersIn: 2 })), false, 'a split wallet that got tokens from its bundle');
+    assert.equal(C.isPoolRow(null), false);
+  });
+  test('Trojan grouping skips the pool even when its two rows differ', () => {
+    const s = snap();
+    const cl = C.trojanBundles([pool(178.4e6), ...s.bp], [pool(133.8e6), ...s.pos], null, 1e9);
+    assert.deepEqual(cl.map((c) => c.id), [B1, B2]);
+    assert.deepEqual(C.trojanBundles([pool(178e6)], [], null, 1e9), [], 'missing from positions too');
+    assert.deepEqual(C.trojanBundles([pool(178e6)], null, { [P]: { n: 3 } }, 1e9), [], 'even if a table row says aggregate');
+  });
+  test('trojanMeta drops a pool aggregate and pool members', () => {
+    const m = C.trojanMeta([
+      { type: 'aggregate', id: 'aggregate-' + P, metrics: pool(1) },
+      { type: 'aggregate', id: 'aggregate-' + B1, primaryWalletAddress: B1, metrics: row(B1, 1), children: [{ metrics: row(B1, 1) }, { metrics: row(L, 1) }, { metrics: pool(1) }] },
+    ]);
+    assert.deepEqual(Object.keys(m), [B1]);
+    assert.equal(m[B1].n, 2);
+  });
+  test('same-funder grouping skips the pool; the summary ignores it', () => {
+    const w = (i, bal) => Object.assign(row('W' + String(i).padStart(43, 'x'), bal), { fundingInfo: { firstNativeFunderAddress: F1, firstNativeFundingAmount: 1 } });
+    const rows = [pool(178e6), w(1, 10e6), w(2, 5e6)];
+    const cl = C.clusterize(rows, 1e9);
+    assert.equal(cl.length, 1);
+    assert.equal(cl[0].n, 2);
+    assert.equal(cl[0].bal, 15e6);
+    assert.deepEqual(C.clusterize([pool(178e6), w(1, 10e6)]), [], 'pool + 1 wallet is not a group');
+    const sum = C.bundleSummary(cl, rows.map((r) => (r.walletAddress === P ? Object.assign({}, r, { amountSniped: 9 }) : r)));
+    assert.equal(sum.snipers, 0);
+    assert.equal(sum.held, 1.5);
+  });
+});
