@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.8.0
+// @version      3.9.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -598,6 +598,9 @@
       w: 380,            // widget width at 100% size: ≥ 600 switches to the wide (2-column) layout
       barOneClick: false,
       barOnAg: false,
+      barBox: null,      // holdings bar position / size {x, y, w, h} (null = centred at the top)
+      barHide: {},       // mint → true: positions hidden from the bar (until that position is closed)
+      barSort: 'value',  // bar order: value | pnl | pct
       cardIntel: true,   // AG risk pill + hover peek on terminal cards
       filter: { mode: 'smart', native: false, after: 10 }, // AG filter on terminal lists (see Core.filterAction / nativeDue)
       hiddenCoins: [],
@@ -619,6 +622,8 @@
     for (const m of st.hiddenCoins) if (!st.hiddenMeta[m]) st.hiddenMeta[m] = { t: Date.now(), n: null }; // hidden before 3.4: watch from now on
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
     st.filter = Object.assign({ mode: 'smart', native: false, after: 10 }, st.filter || {});
+    if (!st.barHide || typeof st.barHide !== 'object') st.barHide = {};
+    if (!['value', 'pnl', 'pct'].includes(st.barSort)) st.barSort = 'value';
     if (!Core.FILTER_MODES.includes(st.filter.mode)) st.filter.mode = 'smart';
     { const A = st.alerts || {};
       st.alerts = { dev: Object.assign({ on: true, pct: 1, auto: false }, A.dev), whale: Object.assign({ on: true, sol: 5 }, A.whale), move: Object.assign({ on: false, pct: 30 }, A.move),
@@ -650,7 +655,7 @@
     // → an order is NOT resent (it may have executed), reads go direct.
     const H = { ackMs: 1500, lostMs: 20000, pingMs: 5000, reopenAfter: 30000, reopenEvery: 60000, skipAfterMiss: 15000 };
     const hs = { rtt: null, pingId: null, pingAt: 0, pongAt: 0, h: null, dstat: null, auth: null, log: [], st: '', reopenAt: 0 };
-    const hl = (m, lvl) => { hs.log.unshift({ t: Date.now(), m, lvl: lvl || 'i' }); hs.log.length = Math.min(hs.log.length, 30); };
+    const hl = (m, lvl) => { const l0 = hs.log[0]; if (l0 && l0.m === m && Date.now() - l0.t < 5000) return; hs.log.unshift({ t: Date.now(), m, lvl: lvl || 'i' }); hs.log.length = Math.min(hs.log.length, 30); };
     const pending = new Map(), acks = new Map();
     if (env !== 'ag') {
       GM_addValueChangeListener('agRpcRes', (_k, _o, v) => { const f = v && pending.get(v.id); if (f) { pending.delete(v.id); acks.delete(v.id); f({ r: v.results }); } });
@@ -719,7 +724,8 @@
     function setSel(list) { st.wallets[st.mode] = list; save(); }
     async function loadWallets(fresh) {
       if (fresh && env === 'ag') bus.drop('/api/performance/wallets-list');
-      const [r] = await call([{ method: 'GET', path: `/api/performance/wallets-list?source=${st.mode}` }]);
+      // terminal tabs go through the backtester tab's request cache (30s for this list): a fresh read gets its own key
+      const [r] = await call([{ method: 'GET', path: `/api/performance/wallets-list?source=${st.mode}${fresh && env !== 'ag' ? '&t=' + Date.now() : ''}` }]);
       if (r && r.ok && Array.isArray(r.j.wallets)) {
         wallets = r.j.wallets; walletErr = '';
         if (num(r.j.solPrice) > 0) usdRate = num(r.j.solPrice); // AG's own SOL/USD
@@ -887,7 +893,7 @@
     function startStream() {
       // shared ticks from the other tab
       GM_addValueChangeListener('twTick', (_k, _o, v, remote) => { if (remote && v && v.mint) { stream.at = Date.now(); putTick(v.mint, v.mcap, v.src, false); } });
-      GM_addValueChangeListener('twPosPing', (_k, _o, _v, remote) => { if (remote) { loadPos(); if (env !== 'ag') loadHeld(); } });
+      GM_addValueChangeListener('twPosPing', (_k, _o, _v, remote) => { if (remote) { loadPos(); if (env !== 'ag') loadHeld(); if (st.mode === 'live') loadWallets(true); } });
       if (env !== 'ag') {
         const rd = () => { const m = getMint(), v = parseUsd(document.title); if (m && v) putTick(m, v, env, true); };
         new MutationObserver(rd).observe(document.head, { childList: true, subtree: true, characterData: true });
@@ -956,7 +962,6 @@
       const ok = res.filter((r) => r && r.ok).length, bad = res.filter((r) => !r || !r.ok);
       const errs = [...new Set(bad.map((r) => (r && r.j && (r.j.error || r.j.message)) || (r && r.status === 409 ? 'already in progress' : 'failed')))];
       if (!quiet || !ok) toast(`${side} ${label}: ${ok}/${res.length} submitted${errs.length ? ' · ' + errs.join('; ') : ''}`, !ok);
-      setTimeout(loadPos, 2500); setTimeout(loadPos, 8000); setTimeout(loadHeld, 3000);
       return ok;
     }
     function buyLegs(amount, ws, split, jitterPct) { // rules: Core.buyLegs
@@ -1052,7 +1057,11 @@
       report('Buy', res, `${note ? note.split(' @')[0] + ' · ' : ''}${lbl}${mint !== getMint() ? ' of ' + name : ''}`);
       if (okN && st.alerts && st.alerts.fills) notify(`Bought ${name}`, `${okN}/${res.length} filled · ${lbl}`, 'fill', mint);
       if (skipped.length && interactive) setTimeout(() => toast('Skipped (low balance): ' + skipped.join(', '), true), 1200);
-      if (live) setTimeout(() => loadWallets(true), 8000);
+      if (okN) {
+        if (live) legs.forEach((x, i) => { if (res[i] && res[i].ok) spendLocal(x.w, x.amt); }); // balances drop right away
+        pendingBuy[mint] = { sym: name, sol: legs.reduce((a, x, i) => a + (res[i] && res[i].ok ? x.amt : 0), 0), mode, until: Date.now() + 30000 };
+      }
+      settle(mint, mode);
       if (okN && strat) attachExit(mint, mode, legs.filter((x, i) => res[i] && res[i].ok).map((x) => x.w), strat, name);
       return { ok: okN, total };
     }
@@ -1080,6 +1089,8 @@
       if (interactive) { ui.busy = ''; render(); }
       const okN = report('Sell', res, `${label || pct + '%'}${ws.length > 1 ? ' ×' + ws.length : ''}${mint !== getMint() ? ' of ' + (symb || tail(mint)) : ''}`);
       if (okN && st.alerts && st.alerts.fills) notify(`Sold ${symb || (mint === getMint() ? sym : '') || tail(mint)}`, `${label || pct + '%'} on ${okN}/${res.length} wallet(s)`, 'fill', mint);
+      if (okN && okN === res.length && pct >= 100 && !only) { pendingGone[mint] = Date.now() + 120000; delete pendingBuy[mint]; renderBar(); render(); } // fully sold: gone from the bar now
+      settle(mint, mode);
       return { ok: okN };
     }
     async function sell(pct) {
@@ -1114,6 +1125,7 @@
       const res = await call(plan.map((x) => ({ method: 'POST', path: `/api/tokens/${mint}/sell`, body: { percent: x.pct, source: st.mode, idempotencyKey: id(), walletAddress: x.w } })), true);
       ui.busy = ''; render();
       report('Sell initials', res, plan.length > 1 ? `×${plan.length}` : `${plan[0].pct}%`);
+      settle(mint, st.mode);
       if (skipped.length) setTimeout(() => toast('Skipped: ' + skipped.join(' · ')), 1200);
     }
 
@@ -1525,6 +1537,7 @@
               else logp(`sell failed ${tail(x.w)}: ${(r && r.j && r.j.error) || 'error'}${s.tries < 3 ? ', will retry' : ', giving up'}`);
             });
             const okN = rs.filter((r) => r && r.ok).length;
+            if (okN) { settle(o.mint, o.mode); GM_setValue('twPosPing', Date.now()); } // other tabs refresh too
             toast(`${o.sym}: ${orderLabel(o)} → sold on ${okN}/${sells.length} wallet(s)`, !okN);
             if (okN && st.alerts.fills) notify(`${o.sym}: ${orderTag(o)} fired`, `${orderLabel(o)} · sold on ${okN} wallet(s)`, 'fill', o.mint);
             if (o.type !== 'protect' && o.type !== 'exitx' && ws.every((w) => o.state[w] && o.state[w].sold)) fin('done');
@@ -2137,6 +2150,25 @@
     // plus a ⚡ quick-buy button (amount in ⚙, uses the current mode, buy mode and your default wallet selection).
     let held = {};
     let heldBusy = null;
+    // ---- after a trade: show it right away, then re-read AG quickly until it shows it too.
+    //  pendingBuy[mint]  = a buy AG hasn't listed yet (bar chip "pending")
+    //  pendingGone[mint] = a full sell: hidden from the bar / cards until AG drops the position (2 min max)
+    const pendingBuy = {}, pendingGone = {};
+    function spendLocal(w, amt) { const x = wallets.find((v) => v.address === w); if (x && num(x.balanceSol) != null) x.balanceSol = Math.max(0, num(x.balanceSol) - amt); }
+    const holdSig = (mint) => { const h = heldAll[mint]; return h ? h.worth.toFixed(4) + ':' + h.n : '-'; };
+    const balSig = () => wallets.map((w) => w.address + ':' + w.balanceSol).join('|');
+    function settle(mint, mode) {
+      const steps = [600, 1500, 3000, 5000, 8000, 12000, 18000, 26000], h0 = holdSig(mint), b0 = balSig();
+      let i = 0, seenH = false, seenB = mode !== 'live';
+      const tick = async () => {
+        if (st.mode !== mode) return;
+        await Promise.all([loadHeld(true), mint === getMint() ? loadPos() : null, mode === 'live' ? loadWallets(true) : null]);
+        seenH = seenH || holdSig(mint) !== h0; seenB = seenB || balSig() !== b0;
+        if (++i < steps.length && !(seenH && seenB)) setTimeout(tick, steps[i] - steps[i - 1]);
+        else if (seenH && seenB && i < steps.length) setTimeout(() => { loadHeld(true); if (mode === 'live') loadWallets(true); }, 2500); // one confirming read
+      };
+      setTimeout(tick, steps[0]);
+    }
     function loadHeld() { return heldBusy || (heldBusy = loadHeld0().finally(() => { heldBusy = null; })); }
     async function loadHeld0() {
       const [r] = await call([{ method: 'GET', path: `/api/performance/holdings?source=${st.mode}` }]);
@@ -2152,6 +2184,12 @@
         if (c > 0 && em > 0) { a.eW += em * c; a.eS += c; }
       }
       for (const a of Object.values(m)) a.entry = a.eS ? a.eW / a.eS : null;
+      const now = Date.now();
+      for (const k of Object.keys(pendingGone)) if (!m[k] || now > pendingGone[k]) delete pendingGone[k]; // AG caught up on a full sell (or 2 min passed)
+      for (const k of Object.keys(pendingBuy)) if (m[k] || now > pendingBuy[k].until || pendingBuy[k].mode !== st.mode) delete pendingBuy[k];
+      let pruned = false; // a hidden position that was closed: forget it (a new buy shows again)
+      for (const k of Object.keys(st.barHide)) if (!m[k] && !pendingGone[k]) { delete st.barHide[k]; pruned = true; }
+      if (pruned) save();
       heldAll = m; held = m;
       if (env !== 'ag') scanCards();
       if (ui.panel === 'pos') render();
@@ -2247,7 +2285,7 @@
           continue;
         }
         if (st.cardIntel) { const r = hostEl.getBoundingClientRect(); if (r.bottom > -200 && r.top < vh + 200) wantCardIntel(mint); }
-        const h = held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint), sn = ui.sigNew && Date.now() - (ui.sigNew[mint] || 0) < 120000;
+        const h = pendingGone[mint] ? null : held[mint], pill = st.cardIntel ? cardPill(mint) : '', dev = devAl.has(mint), sn = ui.sigNew && Date.now() - (ui.sigNew[mint] || 0) < 120000;
         const key = `${mint}|${h ? h.worth.toFixed(4) + ':' + h.pnl.toFixed(4) : '-'}|${st.qb}|${st.mode}|${st.buyMode}|${usdRate ? 1 : 0}|${pill}|${dev}|${sn ? 1 : 0}|${ag}`;
         let c = hostEl.querySelector(':scope > .agtw-c');
         if (hostEl.classList.contains('agtw-held') !== !!h) hostEl.classList.toggle('agtw-held', !!h);
@@ -2471,10 +2509,23 @@
     // ---------------------------------------------------------- holdings bar (top of the page, GMGN style)
     // One chip per open position in the current mode: coin · PnL ◎ (%) · ⚡ 100% sell. Click the coin to open it.
     // The sell button arms on the first click and sells on the second (within 2.5s) unless "one-click" is on.
-    let barEl = null, barArm = { mint: null, at: 0 };
+    let barEl = null, barArm = { mint: null, at: 0 }, barShowHidden = false;
     const BAR_CSS = `
-      #agtwBar{position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:100000;max-width:min(62vw,900px);display:flex;align-items:center;gap:6px;
-        background:#17191Ef2;border:1px solid #2C3038;border-radius:10px;padding:3px 4px 3px 8px;box-shadow:0 8px 24px #0009;font:500 12px/1 'IBM Plex Sans',Inter,system-ui,sans-serif;color:#E6E8EC}
+      #agtwBar{position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:100000;max-width:min(62vw,900px);display:flex;align-items:center;gap:6px;box-sizing:border-box;
+        background:#17191Ef2;border:1px solid #2C3038;border-radius:10px;padding:3px 10px 3px 2px;box-shadow:0 8px 24px #0009;font:500 12px/1 'IBM Plex Sans',Inter,system-ui,sans-serif;color:#E6E8EC}
+      #agtwBar.free{transform:none;max-width:none;align-items:flex-start}
+      #agtwBar .bg{align-self:stretch;width:10px;flex:none;cursor:move;border-radius:4px;background:radial-gradient(circle,#4B5160 1px,transparent 1.5px) 0 0/5px 5px;opacity:.7}
+      #agtwBar .bg:hover{opacity:1;background-color:#24272E}
+      #agtwBar .brz{position:absolute;right:0;bottom:0;width:12px;height:12px;cursor:nwse-resize;opacity:.5;border-radius:0 0 9px 0;
+        background:linear-gradient(135deg,transparent 0 55%,#8B919C 55% 62%,transparent 62% 72%,#8B919C 72% 79%,transparent 79%)}
+      #agtwBar .brz:hover{opacity:1}
+      #agtwBar.wrap .bs{flex-wrap:wrap;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;align-content:flex-start}
+      #agtwBar .bv{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11px;color:#8B919C;white-space:nowrap}
+      #agtwBar .bh{background:none;border:0;color:#6E7480;cursor:pointer;font:600 12px/1 system-ui,sans-serif;padding:2px 3px;border-radius:5px}
+      #agtwBar .bh:hover{color:#E6E8EC;background:#2C3038}
+      #agtwBar .bc.pend{border-style:dashed;opacity:.75}#agtwBar .bc.hid{opacity:.45}
+      #agtwBar .bmore{background:none;border:1px dashed #3A3F48;color:#8B919C;border-radius:7px;padding:3px 7px;font:600 10.5px/1 Inter,system-ui,sans-serif;cursor:pointer;flex:none;white-space:nowrap}
+      #agtwBar .bsum{cursor:pointer}
       #agtwBar .bt{font-size:9.5px;font-weight:700;letter-spacing:.08em;color:#15180F;background:#B8F04A;border-radius:4px;padding:2px 5px;cursor:pointer;flex:none;border:0}
       #agtwBar .bt.paper{background:#3B82F6;color:#fff}
       #agtwBar .bs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0}
@@ -2489,23 +2540,61 @@
       #agtwBar .bx:hover{background:#E0677C}
       #agtwBar .bx.arm{background:#F2B84B;color:#2A1D05}
       #agtwBar .bx:disabled{opacity:.5;cursor:default}
-      #agtwBar .bsum{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11px;color:#8B919C;padding:0 4px;white-space:nowrap;flex:none}`;
+      #agtwBar .bsum{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11px;color:#8B919C;padding:0 4px;white-space:nowrap;flex:none}
+      #agtwBar .bsum.up{color:#8FE6B4}#agtwBar .bsum.dn{color:#F59AA6}`;
+    const BAR_SORT = { value: (a, b) => b.worth - a.worth, pnl: (a, b) => b.pnl - a.pnl, pct: (a, b) => b.pct - a.pct };
     function barHtml() {
-      const rows = Object.entries(heldAll).map(([mint, h]) => {
+      const all = Object.entries(heldAll).filter(([mint]) => !pendingGone[mint]).map(([mint, h]) => {
         const live = mint === getMint() && pos, lp = live ? livePos() : null;
         const worth = live ? Object.values(lp).reduce((a, x) => a + (num(x.worthSol) || 0), 0) : h.worth;
         const pnl = live ? Object.values(lp).reduce((a, x) => a + (num(x.pnlSol) || 0), 0) : h.pnl;
-        const cost = worth - pnl;
-        return { mint, sym: h.sym || tail(mint), pnl, pct: cost > 0 ? (pnl / cost) * 100 : 0, worth };
-      }).sort((a, b) => b.worth - a.worth);
-      if (!rows.length) return '';
-      const tot = rows.reduce((a, r) => a + r.pnl, 0), armed = barArm.mint && Date.now() - barArm.at < 2500 ? barArm.mint : null;
-      return `<button class="bt ${st.mode}" data-bar="toggle" title="AG positions (${st.mode}) · click to hide">${st.mode === 'live' ? 'AG' : 'PAPER'}</button>
-        <div class="bs">${rows.map((r) => `<div class="bc ${r.mint === getMint() ? 'cur' : ''}"><button class="bn" data-bar="open" data-m="${r.mint}" title="Open ${escH(r.sym)} · ◎ ${sol(r.worth)} held">
+        const cost = worth - pnl, mc = mcapNow(mint);
+        return { mint, sym: h.sym || tail(mint), pnl, pct: cost > 0 ? (pnl / cost) * 100 : 0, worth, n: h.n, entry: h.entry, mc };
+      }).sort(BAR_SORT[st.barSort] || BAR_SORT.value);
+      const hidN = all.filter((r) => st.barHide[r.mint]).length;
+      const rows = all.filter((r) => barShowHidden || !st.barHide[r.mint]);
+      const pend = Object.entries(pendingBuy).filter(([m, p]) => !heldAll[m] && p.mode === st.mode && Date.now() < p.until);
+      if (!all.length && !pend.length) return '';
+      const tot = all.reduce((a, r) => a + r.pnl, 0), val = all.reduce((a, r) => a + r.worth, 0), armed = barArm.mint && Date.now() - barArm.at < 2500 ? barArm.mint : null;
+      const tip = (r) => `${r.sym} · ◎ ${sol(r.worth)} held in ${r.n} wallet${r.n > 1 ? 's' : ''}${r.entry ? ` · entry $${kfmt(r.entry)}` : ''}${r.mc ? ` · now $${kfmt(r.mc)}${r.entry ? ` (${(r.mc / r.entry).toFixed(2)}×)` : ''}` : ''} · click to open`;
+      return `<span class="bg" data-bar="drag" title="Drag to move · double-click to put it back at the top"></span>
+        <button class="bt ${st.mode}" data-bar="toggle" title="AG positions (${st.mode}) · click to hide the bar (B)">${st.mode === 'live' ? 'AG' : 'PAPER'}</button>
+        <div class="bs">${pend.map(([m, p]) => `<div class="bc pend" title="Buy sent · waiting for AG to list the position"><button class="bn" data-bar="open" data-m="${m}"><span class="bsym">${escH(p.sym || tail(m))}</span><span class="bv">◎ ${sol(p.sol)} · pending…</span></button></div>`).join('')}
+        ${rows.map((r) => `<div class="bc ${r.mint === getMint() ? 'cur' : ''} ${st.barHide[r.mint] ? 'hid' : ''}"><button class="bn" data-bar="open" data-m="${r.mint}" title="${escH(tip(r))}">
           <span class="bi">${escH(r.sym.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?')}</span><span class="bsym">${escH(r.sym)}</span>
+          <span class="bv">◎ ${sol(r.worth)}</span>
           <span class="bp ${r.pnl >= 0 ? 'up' : 'dn'}">◎ ${r.pnl >= 0 ? '+' : '−'}${sol(Math.abs(r.pnl))} (${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%)</span></button>
-          <button class="bx ${armed === r.mint ? 'arm' : ''}" data-bar="sell" data-m="${r.mint}" title="${st.barOneClick ? 'Sell 100% from every wallet holding it' : 'Click twice to sell 100% from every wallet holding it'}" ${ui.busy ? 'disabled' : ''}>${armed === r.mint ? 'Sure? 100%' : '⚡ 100%'}</button></div>`).join('')}</div>
-        ${rows.length > 1 ? `<span class="bsum ${tot >= 0 ? 'up' : 'dn'}" title="Unrealized PnL, all positions">Σ ${tot >= 0 ? '+' : '−'}${sol(Math.abs(tot))}</span>` : ''}`;
+          <button class="bx ${armed === r.mint ? 'arm' : ''}" data-bar="sell" data-m="${r.mint}" title="${st.barOneClick ? 'Sell 100% from every wallet holding it' : 'Click twice to sell 100% from every wallet holding it'}" ${ui.busy ? 'disabled' : ''}>${armed === r.mint ? 'Sure? 100%' : '⚡ 100%'}</button>
+          <button class="bh" data-bar="${st.barHide[r.mint] ? 'unhide' : 'hide'}" data-m="${r.mint}" title="${st.barHide[r.mint] ? 'Show it in the bar again' : 'Hide this position from the bar (it comes back if you buy it again after closing it)'}">${st.barHide[r.mint] ? '↺' : '×'}</button></div>`).join('')}
+        ${hidN ? `<button class="bmore" data-bar="showhid" title="${barShowHidden ? 'Hide them again' : 'Show the positions you hid'}">${barShowHidden ? 'done' : '+' + hidN + ' hidden'}</button>` : ''}</div>
+        ${all.length ? `<span class="bsum ${tot >= 0 ? 'up' : 'dn'}" data-bar="sort" title="${all.length} position${all.length > 1 ? 's' : ''} · ◎ ${sol(val)} held · unrealized PnL. Click to sort by ${{ value: 'PnL', pnl: '%', pct: 'value' }[st.barSort]} (now: ${st.barSort})">Σ ${tot >= 0 ? '+' : '−'}${sol(Math.abs(tot))}</span>` : ''}
+        <span class="brz" data-bar="resize" title="Drag to resize (taller = several rows) · double-click to reset"></span>`;
+    }
+    // position / size: st.barBox {x, y, w, h}; kept on screen
+    function placeBar() {
+      if (!barEl) return;
+      const b = st.barBox;
+      barEl.classList.toggle('free', !!b);
+      barEl.classList.toggle('wrap', !!(b && b.h > 40));
+      if (!b) { Object.assign(barEl.style, { left: '', top: '', width: '', height: '' }); return; }
+      const vw = window.innerWidth, vh = window.innerHeight, w = Math.max(200, Math.min(vw - 8, b.w || 600)), h = b.h ? Math.max(30, Math.min(vh - 8, b.h)) : null;
+      const x = Math.max(4 - w + 80, Math.min(vw - 80, b.x)), y = Math.max(0, Math.min(vh - 30, b.y));
+      Object.assign(barEl.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h ? h + 'px' : '' });
+      const bs = barEl.querySelector('.bs');
+      if (bs) bs.style.maxHeight = h ? h - 8 + 'px' : '';
+    }
+    function barDrag(e, kind) {
+      e.preventDefault();
+      const r = barEl.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
+      const b0 = st.barBox || { x: r.left, y: r.top, w: r.width, h: 0 };
+      const mv = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        st.barBox = kind === 'drag' ? { ...b0, x: b0.x + dx, y: b0.y + dy } : { ...b0, w: Math.max(200, (b0.w || r.width) + dx), h: Math.max(0, (b0.h || r.height) + dy) };
+        if (st.barBox.h && st.barBox.h < r.height + 12 && kind === 'resize') st.barBox.h = 0; // barely taller: stay one row
+        placeBar();
+      };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); save(); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
     }
     function renderBar() {
       if (env === 'ag' && !st.barOnAg) { if (barEl) barEl.style.display = 'none'; return; }
@@ -2515,10 +2604,14 @@
         barEl = document.createElement('div'); barEl.id = 'agtwBar'; document.body.appendChild(barEl);
         barEl.addEventListener('click', onBarClick);
         ['mousedown', 'pointerdown'].forEach((t) => barEl.addEventListener(t, (e) => e.stopPropagation()));
+        barEl.addEventListener('mousedown', (e) => { const h = e.target.closest('[data-bar="drag"],[data-bar="resize"]'); if (h) barDrag(e, h.dataset.bar); });
+        barEl.addEventListener('dblclick', (e) => { if (e.target.closest('[data-bar="drag"],[data-bar="resize"]')) { st.barBox = null; save(); placeBar(); } });
+        window.addEventListener('resize', placeBar);
       }
       const html = barHtml();
       barEl.style.display = html ? 'flex' : 'none';
       if (html !== barEl.__html) { barEl.__html = html; patch(barEl, html); }
+      placeBar();
     }
     function onBarClick(e) {
       const b = e.target.closest('[data-bar]');
@@ -2527,10 +2620,13 @@
       const d = b.dataset, h = heldAll[d.m] || {};
       if (d.bar === 'toggle') { st.barHidden = true; save(); renderBar(); toast('Holdings bar hidden · bring it back in ⚙ or with B'); return; }
       if (d.bar === 'open') return openCoin(d.m);
+      if (d.bar === 'hide' || d.bar === 'unhide') { if (d.bar === 'hide') st.barHide[d.m] = true; else delete st.barHide[d.m]; save(); renderBar(); if (d.bar === 'hide' && !barShowHidden) toast(`${h.sym || tail(d.m)} hidden from the bar · "+ hidden" shows it`); return; }
+      if (d.bar === 'showhid') { barShowHidden = !barShowHidden; renderBar(); return; }
+      if (d.bar === 'sort') { st.barSort = { value: 'pnl', pnl: 'pct', pct: 'value' }[st.barSort] || 'value'; save(); renderBar(); toast(`Bar sorted by ${{ value: 'value held', pnl: 'PnL ◎', pct: 'PnL %' }[st.barSort]}`); return; }
       if (d.bar === 'sell') {
         if (!st.barOneClick && !(barArm.mint === d.m && Date.now() - barArm.at < 2500)) { barArm = { mint: d.m, at: Date.now() }; renderBar(); setTimeout(renderBar, 2600); return; }
         barArm = { mint: null, at: 0 };
-        execSell({ mint: d.m, symb: h.sym, pct: 100, interactive: true }).then(() => { setTimeout(loadHeld, 2500); });
+        execSell({ mint: d.m, symb: h.sym, pct: 100, interactive: true });
         renderBar();
       }
     }
@@ -2805,7 +2901,7 @@
 
     function posHtml(orders) {
       const ex = GM_getValue('twExits', {}) || {};
-      const rows = Object.entries(heldAll).map(([mint, h]) => {
+      const rows = Object.entries(heldAll).filter(([m]) => !pendingGone[m]).map(([mint, h]) => {
         const live = mint === getMint() && pos, lp = live ? livePos() : null;
         const worth = live ? Object.values(lp).reduce((a, x) => a + (num(x.worthSol) || 0), 0) : h.worth;
         const pnl = live ? Object.values(lp).reduce((a, x) => a + (num(x.pnlSol) || 0), 0) : h.pnl;
@@ -3044,7 +3140,7 @@
         <span class="sm2">Layout</span>
         <div class="sh"><span class="seg">${[[380, 'Tall'], [720, 'Wide · 2 columns']].map(([w, l]) => `<button class="${(wideOn() ? 720 : 380) === w ? 'on' : ''}" data-lw="${w}">${l}</button>`).join('')}</span><span class="mut sm">or drag the right edge</span></div>
         <span class="sm2">Holdings bar</span>
-        <div class="eg two">${ck('bar', 'Show holdings at the top', st.bar && !st.barHidden)}${ck('barOneClick', 'One-click ⚡ 100% (no confirm)', st.barOneClick)}${env === 'ag' ? ck('barOnAg', 'Also on the backtester', st.barOnAg) : ''}</div>
+        <div class="eg two">${ck('bar', 'Show holdings at the top', st.bar && !st.barHidden)}${ck('barOneClick', 'One-click ⚡ 100% (no confirm)', st.barOneClick)}${st.barBox || Object.keys(st.barHide).length ? `<button class="btn sm" data-a="barreset" title="Back to the top centre, normal size, nothing hidden">Reset bar position & hidden</button>` : ''}${env === 'ag' ? ck('barOnAg', 'Also on the backtester', st.barOnAg) : ''}</div>
         <span class="sm2">AG Intel</span>
         <div class="eg two">${ck('intelOn', 'Intel panel on coin pages', st.intel.on)}${ck('cardIntel', 'AG risk pill + peek on cards', st.cardIntel)}
           ${ck('unhideOnSignal', 'Unhide a hidden coin on a new AG signal', st.unhideOnSignal)}<span></span>
@@ -3131,6 +3227,7 @@
       }
       switch (a) {
         case 'panelx': ui.panel = null; return render();
+        case 'barreset': st.barBox = null; st.barHide = {}; save(); renderBar(); return render();
         case 'intel': st.intel.open = !st.intel.open; save(); if (st.intel.open) loadIntel(getMint()); return render();
         case 'intelr': loadIntel(getMint(), true); return;
         case 'imore': ui.imore = !ui.imore; return render();
@@ -3552,7 +3649,7 @@
       try { startStream(); } catch (e) { console.warn('[AG widget] live stream', e); }
       try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { agPack: () => agPack, nativeDone, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s

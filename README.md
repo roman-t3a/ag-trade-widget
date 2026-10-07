@@ -27,7 +27,7 @@ Two Tampermonkey userscripts:
 - Live price + PnL (terminal title ticks + AG socket), average entry, positions, alerts, trade log, share card.
 - AG filter on GMGN, Trojan and Axiom lists: AG coins badged, the rest smart-hidden (back as soon as AG matches them), dimmed or left alone.
 - GMGN, Trojan and Axiom (Pulse) cards: AG risk pill + hover peek, quick buy, hide coin (it comes back on a new AG signal).
-- Holdings bar at the top of GMGN, wide 2-column layout, hotkeys.
+- Holdings bar (movable, resizable, hide positions, sort; sold positions vanish at once), wide 2-column layout, hotkeys.
 - Connection health footbar (Relay · AG · Feed · Orders) with a diagnostics panel.
 
 ## How the tabs talk

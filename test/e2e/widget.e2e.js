@@ -520,9 +520,35 @@ async function main() {
       await t.page.click(sel); await t.wait(2600); // GMGN tab without a backtester tab: 1.5s relay nudge, then direct
       const s2 = t.posts(/\/sell$/);
       ok('second click sells 100% from that coin’s holder', s2.length === 1 && s2[0].path.includes(MINT2) && s2[0].body.percent === 100 && s2[0].body.walletAddress === W[3]);
+      ok('a fully sold position leaves the bar right away (before AG catches up)', !(await t.page.$(sel)));
+      const reads = t.be.calls.filter((c) => c.method === 'GET' && /\/holdings/.test(c.path)).length;
+      await t.wait(3200);
+      ok('after a trade AG is re-read quickly (settle), not on the next 5s poll', t.be.calls.filter((c) => c.method === 'GET' && /\/holdings/.test(c.path)).length >= reads + 2);
       t.clear();
-      await t.page.click(sel); await t.wait(2800); await t.page.click(sel); await t.wait(400);
+      const sel1 = `#agtwBar [data-bar="sell"][data-m="${MINT}"]`;
+      await t.page.click(sel1); await t.wait(2800); await t.page.click(sel1); await t.wait(400);
       ok('arming expires after 2.5s (a late click re-arms, no sell)', t.posts(/\/sell$/).length === 0);
+      // hide a position from the bar, show hidden, unhide
+      await t.page.evaluate((m) => { delete window.__agtw.pendingGone[m]; }, MINT2); await t.page.evaluate(() => window.__agtw.loadHeld()); await t.wait(300);
+      await t.page.click(`#agtwBar [data-bar="hide"][data-m="${MINT}"]`); await t.wait(300);
+      let bt = await t.page.evaluate(() => document.getElementById('agtwBar').innerText.replace(/\s+/g, ' '));
+      ok('× hides a position from the bar (a "+1 hidden" chip appears)', !/JEVABLE/.test(bt) && /DABCAT/.test(bt) && /\+1 hidden/.test(bt), bt);
+      await t.page.click('#agtwBar [data-bar="showhid"]'); await t.wait(200);
+      await t.page.click(`#agtwBar [data-bar="unhide"][data-m="${MINT}"]`); await t.wait(200);
+      bt = await t.page.evaluate(() => document.getElementById('agtwBar').innerText.replace(/\s+/g, ' '));
+      ok('↺ shows it again', /JEVABLE/.test(bt) && !/hidden/.test(bt), bt);
+      // move + resize
+      const g = await t.page.$eval('#agtwBar [data-bar="drag"]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+      await t.page.mouse.move(g.x, g.y); await t.page.mouse.down(); await t.page.mouse.move(g.x - 200, g.y + 300, { steps: 4 }); await t.page.mouse.up();
+      const box1 = await t.page.evaluate(() => { const r = document.getElementById('agtwBar').getBoundingClientRect(); return { y: Math.round(r.y), saved: window.__agtw.st.barBox }; });
+      ok('the bar can be dragged anywhere (position saved)', box1.y > 250 && box1.saved && box1.saved.y > 250, JSON.stringify(box1));
+      const rz = await t.page.$eval('#agtwBar [data-bar="resize"]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x + 6, y: r.y + 6 }; });
+      await t.page.mouse.move(rz.x, rz.y); await t.page.mouse.down(); await t.page.mouse.move(rz.x - 120, rz.y + 60, { steps: 4 }); await t.page.mouse.up();
+      const box2 = await t.page.evaluate(() => ({ cls: document.getElementById('agtwBar').className, w: Math.round(document.getElementById('agtwBar').getBoundingClientRect().width), saved: window.__agtw.st.barBox }));
+      ok('the bar is resizable (taller = chips wrap on several rows)', /wrap/.test(box2.cls) && box2.saved.h > 40 && Math.abs(box2.w - box2.saved.w) < 2, JSON.stringify(box2));
+      await t.page.screenshot({ path: `${OUT}/29-holdings-bar-moved.png` });
+      await t.page.dblclick('#agtwBar [data-bar="drag"]'); await t.wait(200);
+      ok('double-click puts it back at the top', await t.page.evaluate(() => !window.__agtw.st.barBox && document.getElementById('agtwBar').getBoundingClientRect().y < 20));
       await t.page.click('#agtwBar [data-bar="toggle"]'); await t.wait(300);
       ok('the AG tag hides the bar', await t.page.evaluate(() => document.getElementById('agtwBar').style.display === 'none'));
       await t.page.mouse.move(700, 700); await t.page.evaluate(() => { window.__agtw.st.hotkeys = 'on'; }); await t.page.keyboard.press('b'); await t.wait(300);
@@ -656,7 +682,7 @@ async function main() {
       await t.page.click('#agtw .hfi'); await t.wait(400);
       const pan = await t.page.evaluate(() => { const p = document.querySelector('#agtw .olp'); return p ? p.innerText.replace(/\s+/g, ' ') : ''; });
       ok('clicking the footbar opens the connection panel', /Connection/.test(pan) && /Relay · backtester tab/.test(pan) && /AG socket\s*connected/.test(pan) && /LAST EVENTS/.test(pan), pan.slice(0, 260));
-      ok('the panel merges events from both tabs', /AG socket reconnected after 3\.1 s/.test(pan) && /sent direct/.test(pan));
+      ok('the panel merges events from both tabs', /AG socket reconnected after 3\.1 s/.test(pan) && /sent direct/.test(pan), pan.slice(pan.indexOf('LAST EVENTS'), pan.indexOf('LAST EVENTS') + 400));
       await t.page.locator('#agtw').screenshot({ path: `${OUT}/28-health-panel.png` });
       await t.page.click('#agtw [data-ha="reconnect"]'); await t.wait(200);
       ok('Reconnect asks the backtester tab to reconnect', (await t.gm('agCmd') || {}).cmd === 'reconnect');

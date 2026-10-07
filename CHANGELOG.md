@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.9.0
+- **Faster balance / position updates after a trade.** Buys lower the wallet balances right away, then AG is
+  re-read at 0.6 · 1.5 · 3 · 5 · 8 · 12 · 18 · 26 s until both the position and the balance show the trade (instead
+  of fixed refreshes at 2.5 / 8 s). Terminal tabs no longer get a balance up to 30 s old from the backtester
+  tab's cache. Auto orders executed by the backtester tab refresh every tab the same way.
+- **Holdings bar**
+  - a position you fully sell disappears at once (it stays hidden until AG drops it, 2 min max);
+  - a buy shows as a dashed "pending…" chip until AG lists the position;
+  - **hide a position** with ×; "+N hidden" shows them again (↺ to unhide). Closing the position forgets the hide;
+  - **movable** (drag the dotted grip) and **resizable** (corner; taller = chips on several rows). Double-click
+    either to put it back at the top; ⚙ → Holdings bar → Reset;
+  - each chip shows the value held, PnL; the tooltip has wallets, entry → now mcap; click Σ to sort by value /
+    PnL ◎ / PnL %.
+
 ## 3.8.0
 - **AG filter on every terminal** (GMGN, Trojan, Axiom), moved here from AG Intel. The backtester tab publishes the
   coins of your filtered Live Terminal; terminal lists then:
