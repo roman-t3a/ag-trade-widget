@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.12.0
+- Bundles panel: a **grouping switch** — *Trojan's bundles* (default, Trojan's own linking, as in 3.11) or *Same first
+  funder* (the 3.10 way: 2+ wallets fed by the same first funder, from the wallet rows; shows same-funding-amount and
+  big-funder flags). Saved; rules, feed and badges use the grouping you pick (history restarts when you switch).
+
 ## 3.11.0
 - **Bundles now match Trojan's own grouping.** 3.10 guessed bundles from wallets sharing a first funder, which gave
   different groups than Trojan's holders table. Trojan links bundle wallets server-side: its

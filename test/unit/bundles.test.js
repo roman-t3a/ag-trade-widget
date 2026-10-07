@@ -178,3 +178,33 @@ test('ruleText', () => {
   assert.equal(C.ruleText(R({ when: 'allout', pct: 2, then: 'buy', buySol: 0.2, mode: 'paper', scope: 'any' })), 'When all bundles together hold ≤ 2% of supply on any coin I open, buy ◎ 0.2 (paper)');
   assert.equal(C.ruleText(R({ who: 'funder', when: 'funder', then: 'alert', scope: 'any' })), 'When a watched bundle shows up on the coin on any coin I open, alert me');
 });
+
+test.describe('same-first-funder grouping (option)', () => {
+  const F1 = 'u6PJFunderAAAAAAAAAAAAAAAAAAAAAAAAAAAAXq2w', F2 = '5tzFFunderBBBBBBBBBBBBBBBBBBBBBBBBBBBBuAi9';
+  const w = (i, f, bal, o = {}) => Object.assign(row('W' + String(i).padStart(43, 'x'), bal, o), { fundingInfo: f ? { firstNativeFunderAddress: f, firstNativeFundingAmount: o.fund ?? 1.25 } : null });
+  const rows = [w(0, F1, 30e6, { sniped: 1 }), w(1, F1, 20e6), w(2, F1, 10e6), w(10, F2, 12e6, { dev: 5, fund: 0.8 }), w(11, F2, 8e6, { fund: 0.8 }), w(20, 'Solo' + 'z'.repeat(40), 50e6), w(21, null, 9e6)];
+  test('clusterize groups 2+ wallets by first funder, biggest first', () => {
+    const cl = C.clusterize(rows, 1e9, 1e-7);
+    assert.deepEqual(cl.map((c) => [c.id, c.n]), [[F1, 3], [F2, 2]]);
+    assert.equal(cl[0].pct, 6);
+    assert.equal(cl[0].sniper, true);
+    assert.equal(cl[0].sameAmt, true);
+    assert.equal(cl[1].dev, true);
+    assert.equal(cl[1].fundAmt, 0.8);
+    assert.equal(cl[0].value, 6);
+    assert.deepEqual(cl[0].wallets.map((x) => x.bal), [30e6, 20e6, 10e6]);
+  });
+  test('clusterize: hot funders, mixed amounts, junk', () => {
+    assert.equal(C.clusterize(Array.from({ length: C.BUNDLE_MAX + 5 }, (_, i) => w(100 + i, F2, 1e6)))[0].hot, true);
+    assert.equal(C.clusterize([w(1, F1, 5, { fund: 1 }), w(2, F1, 5, { fund: 2 })])[0].sameAmt, false);
+    assert.deepEqual(C.clusterize(null), []);
+    assert.deepEqual(C.clusterize([null, {}, { walletAddress: 'x' }]), []);
+    assert.equal(C.bundleSummary(C.clusterize(Array.from({ length: 20 }, (_, i) => w(100 + i, F2, 10e6))), []).clusters, 0, 'hot wallets left out of the summary');
+  });
+  test('rules work the same on funder groups', () => {
+    let h = C.pushPoint([], C.bundlePoint(C.clusterize(rows), 0), 600e3);
+    const after = rows.map((r, i) => (i < 3 ? Object.assign({}, r, { currentTokenBalance: r.currentTokenBalance / 2 }) : r));
+    h = C.pushPoint(h, C.bundlePoint(C.clusterize(after), 30000), 600e3);
+    assert.deepEqual(C.bundleMatches(R({}), h, C.clusterize(after), 30000).map((x) => x.id), [F1]);
+  });
+});

@@ -516,7 +516,9 @@ async function main() {
         amountReceivedFromDev: o.dev ?? 0, amountReceivedFromInsider: 0, lastBuyTimestamp: Math.floor(Date.now() / 1000) - 600, lastSellTimestamp: 0,
         fundingInfo: { walletAddress: w, firstNativeFunderAddress: 'Fund' + w.slice(4), firstNativeFundingAmount: 1 } });
       const mk = (a, b) => ({ bp: [wr(LONE, 80e6), wr(F1, a, { bought: 60e6, buys: 10, sniped: 1, spent: 2 }), wr(F2, b, { bought: 30e6, buys: 8, dev: 3 })],
-        pos: [wr(LONE, 80e6), wr(F1, Math.round(a / 4), { buys: 2 }), wr(F2, Math.round(b / 3), { buys: 3 })] });
+        pos: [wr(LONE, 80e6), wr(F1, Math.round(a / 4), { buys: 2 }), wr(F2, Math.round(b / 3), { buys: 3 }),
+          Object.assign(wr('Sib1eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 6e6), { fundingInfo: { firstNativeFunderAddress: 'SharedFunderFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', firstNativeFundingAmount: 2 } }),
+          Object.assign(wr('Sib2ffffffffffffffffffffffffffffffffffffffff', 4e6), { fundingInfo: { firstNativeFunderAddress: 'SharedFunderFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', firstNativeFundingAmount: 2 } })] });
       const bp = { [MINT]: mk(60e6, 30e6), [MINT2]: mk(10e6, 2e6) }, seen = [];
       const route = async (r, u) => {
         const kind = u.pathname.endsWith('/v1/tokens/bundled-positions') ? 'bp' : u.pathname.endsWith('/v1/tokens/positions') ? 'pos' : null;
@@ -544,6 +546,13 @@ async function main() {
       ok('Trojan: bundles = Trojan\'s own grouping (2 bundles, 9% held; the lone 8% wallet is not one)', /BUNDLES/.test(d) && /2 bundles still hold\s*9\.0%/.test(d.replace(/\s+/g, ' ')), d.replace(/\s+/g, ' ').slice(0, 200));
       ok('Trojan: bundle rows use Trojan\'s name + wallet count from its table, share held, flags', /GZVS\.\.\.LM9b/.test(d) && /5 wallets/.test(d) && /6\.0%/.test(d) && /dev-linked/.test(d) && /high confidence/.test(d), d.replace(/\s+/g, ' ').slice(200, 600));
       await t.page.screenshot({ path: `${OUT}/30-bundles-panel.png` });
+      // grouping switch: same first funder (3.10 way) → only the 2 wallets fed by SharedFunder are a bundle
+      await t.page.click('#agtw [data-bgrp="funder"]'); await t.wait(400);
+      let dg = (await dock()).replace(/\s+/g, ' ');
+      ok('Trojan: grouping switch — same first funder groups wallet rows by funder', /1 bundle still holds\s*1\.0%/.test(dg) && /BUNDLE \(FUNDER\)/.test(dg) && /Shar…FFFF/.test(dg) && /2 wallets/.test(dg) && /same funding 2 ◎/.test(dg), dg.slice(0, 400));
+      await t.page.click('#agtw [data-bgrp="trojan"]'); await t.wait(400);
+      dg = (await dock()).replace(/\s+/g, ' ');
+      ok('Trojan: …and back to Trojan\'s bundles (saved choice)', /2 bundles still hold\s*9\.0%/.test(dg) && await t.page.evaluate(() => window.__agtw.st.bund.group === 'trojan'), dg.slice(0, 200));
       await t.page.click('#agtw .bund .ihd [data-a="bund"]'); await t.wait(300);
       const tabW = await t.page.evaluate(() => { const e = document.querySelector('#agtw .intel.tab.bund'); return e ? Math.round(e.getBoundingClientRect().width) : null; });
       ok('Trojan: collapsing the bundles panel folds it to the thin tab', tabW != null && tabW <= 40, String(tabW));
