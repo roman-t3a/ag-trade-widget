@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.10.1
+// @version      3.11.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -199,39 +199,47 @@
     // live data only, and only for a coin still unmatched `after` minutes after we first saw it.
     const nativeDue = (f, live, isMatch, seenAt, now) => !!(f && f.native && f.mode === 'smart' && live && !isMatch && seenAt && now - seenAt >= Math.max(0, Number(f.after) || 0) * 60000);
 
-    // ---- Trojan bundles. Rows = Trojan's /v1/tokens/bundled-positions entries (top holders of one coin: balances,
-    // buys / sells / transfers, sniped / bundled / dev-received amounts, each wallet's first funder).
-    // A bundle ("cluster") = 2+ wallets with the same first funder. Balances are in token units; `supply` (default
-    // 1B, pump.fun) turns them into % of supply; `px` (SOL per token, optional) values what is still held.
-    const BUNDLE_MAX = 15; // more wallets than this from one funder looks like an exchange / bot hot wallet, not a bundle
-    function clusterize(rows, supply, px) {
-      const sup = num(supply) > 0 ? num(supply) : 1e9, by = {};
-      for (const r of rows || []) {
-        const f = r && r.fundingInfo && r.fundingInfo.firstNativeFunderAddress;
-        if (!f || !r.walletAddress) continue;
-        (by[f] = by[f] || []).push(r);
-      }
-      const out = [];
-      for (const [id, ws] of Object.entries(by)) {
-        if (ws.length < 2) continue;
-        const sum = (k) => ws.reduce((a, w) => a + (num(w[k]) || 0), 0);
-        const bal = sum('currentTokenBalance'), inflow = sum('amountTokensBought') + sum('amountTokensReceived') + sum('amountTokensMinted');
-        const spent = sum('amountNativeSpent'), earned = sum('amountNativeEarned'), value = num(px) > 0 ? bal * px : null;
-        const amts = ws.map((w) => num(w.fundingInfo.firstNativeFundingAmount)).filter((x) => x > 0);
-        const sameAmt = amts.length >= 2 && Math.max(...amts) - Math.min(...amts) <= Math.max(...amts) * 0.02;
+    // ---- Trojan bundles = Trojan's OWN grouping. Trojan's holders table uses two answers for a coin:
+    //   /v1/tokens/positions          one row per wallet (top 100)
+    //   /v1/tokens/bundled-positions  one row per BUNDLE (Trojan's bundler links the wallets server-side; the row's
+    //                                 amounts are the whole bundle's, under its primary wallet) or per lone wallet
+    // A bundled-positions row is a bundle when it isn't that wallet's own position (different balance / buys, or the
+    // wallet isn't in the top 100 alone), or when Trojan's table lists it as one (`meta`: id → { label, n, conf,
+    // wallets }, read from the page while the holders table is on screen). Amounts are in token units; `supply`
+    // (default 1B, pump.fun) → % of supply; `px` (SOL per token, optional) values what is still held.
+    function trojanBundles(bp, pos, meta, supply, px) {
+      const sup = num(supply) > 0 ? num(supply) : 1e9, M = meta || {}, own = pos ? new Map(pos.filter(Boolean).map((p) => [p.walletAddress, p])) : null, out = [];
+      for (const r of bp || []) {
+        if (!r || !r.walletAddress) continue;
+        const m = M[r.walletAddress], p = own && own.get(r.walletAddress), bal = num(r.currentTokenBalance) || 0;
+        const agg = m ? (m.n == null || m.n > 1) : own ? (!p || Math.abs((num(p.currentTokenBalance) || 0) - bal) > Math.max(1, bal * 0.001) || (num(p.numBuys) || 0) !== (num(r.numBuys) || 0)) : false;
+        if (!agg) continue;
+        const inflow = (num(r.amountTokensBought) || 0) + (num(r.amountTokensReceived) || 0) + (num(r.amountTokensMinted) || 0);
+        const spent = num(r.amountNativeSpent) || 0, earned = num(r.amountNativeEarned) || 0, value = num(px) > 0 ? bal * px : null;
         out.push({
-          id, n: ws.length, bal, inflow, pct: (bal / sup) * 100, left: inflow > 0 ? Math.min(1, bal / inflow) : (bal > 0 ? 1 : 0),
-          spent, earned, value, pnl: earned - spent + (value || 0), sells: sum('numSells'), buys: sum('numBuys'), sent: sum('numTransfersOut'),
-          sniper: ws.some((w) => num(w.amountSniped) > 0), bundled: ws.some((w) => num(w.amountBundled) > 0),
-          dev: ws.some((w) => num(w.amountReceivedFromDev) > 0 || num(w.amountReceivedFromInsider) > 0),
-          sameAmt, fundAmt: amts.length ? amts[0] : null, hot: ws.length > BUNDLE_MAX,
-          lastSell: Math.max(0, ...ws.map((w) => num(w.lastSellTimestamp) || 0)), lastBuy: Math.max(0, ...ws.map((w) => num(w.lastBuyTimestamp) || 0)),
-          wallets: ws.map((w) => ({ addr: w.walletAddress, bal: num(w.currentTokenBalance) || 0, bought: num(w.amountTokensBought) || 0, sold: num(w.amountTokensSold) || 0,
-            spent: num(w.amountNativeSpent) || 0, earned: num(w.amountNativeEarned) || 0, fund: num(w.fundingInfo.firstNativeFundingAmount), lastBuy: num(w.lastBuyTimestamp), lastSell: num(w.lastSellTimestamp) }))
-            .sort((a, b) => b.bal - a.bal),
+          id: r.walletAddress, label: (m && m.label) || null, n: m && m.n ? m.n : null, conf: (m && m.conf) || null,
+          bal, inflow, pct: (bal / sup) * 100, left: inflow > 0 ? Math.min(1, bal / inflow) : (bal > 0 ? 1 : 0),
+          spent, earned, value, pnl: earned - spent + (value || 0), sells: num(r.numSells) || 0, buys: num(r.numBuys) || 0, sent: num(r.numTransfersOut) || 0,
+          sniper: num(r.amountSniped) > 0, bundled: num(r.amountBundled) > 0, dev: num(r.amountReceivedFromDev) > 0 || num(r.amountReceivedFromInsider) > 0,
+          hot: false, lastSell: num(r.lastSellTimestamp) || 0, lastBuy: num(r.lastBuyTimestamp) || 0,
+          wallets: ((m && m.wallets) || []).map((w) => ({ addr: w.walletAddress, bal: num(w.currentTokenBalance) || 0, bought: num(w.amountTokensBought) || 0, sold: num(w.amountTokensSold) || 0,
+            spent: num(w.amountNativeSpent) || 0, earned: num(w.amountNativeEarned) || 0, lastBuy: num(w.lastBuyTimestamp), lastSell: num(w.lastSellTimestamp) })).sort((a, b) => b.bal - a.bal),
         });
       }
       return out.sort((a, b) => b.bal - a.bal);
+    }
+    // Trojan's holders table rows (React props) → meta for trojanBundles: { id: { label, n, conf, wallets } }
+    function trojanMeta(rows) {
+      const out = {};
+      for (const r of rows || []) {
+        if (!r || r.type !== 'aggregate' || typeof r.id !== 'string') continue;
+        const id = (r.metrics && r.metrics.walletAddress) || r.id.replace(/^aggregate-/, '');
+        const kids = Array.isArray(r.children) ? r.children.map((c) => (c && (c.metrics || c.position)) || c).filter((c) => c && c.walletAddress) : [];
+        // the members list may or may not include the primary wallet: count it once
+        const prim = r.primaryWalletAddress, n = kids.length ? kids.length + (prim && !kids.some((k) => k.walletAddress === prim) ? 1 : 0) : null;
+        out[id] = { label: r.walletLabel || null, n, conf: r.bundlerConfidence || null, wallets: kids };
+      }
+      return out;
     }
     // whole-coin view: what the bundles still hold + a 0-100 risk (held share, dev links, snipers, sell pressure)
     function bundleSummary(cl, rows, supply) {
@@ -304,7 +312,7 @@
       });
       return out;
     }
-    const BUNDLE_WHO = { any: 'any bundle', top3: 'a top-3 bundle', min: 'a bundle holding ≥ {minPct}%', dev: 'a dev-linked bundle', snipers: 'a sniper bundle', funder: 'a watched funder' };
+    const BUNDLE_WHO = { any: 'any bundle', top3: 'a top-3 bundle', min: 'a bundle holding ≥ {minPct}%', dev: 'a dev-linked bundle', snipers: 'a sniper bundle', funder: 'a watched bundle' };
     const BUNDLE_THEN = { alert: 'alert me', sell: 'sell {sellPct}% of my bag', init: 'sell my initials', hide: 'hide the coin', buy: 'buy ◎ {buySol} ({mode})' };
     function ruleText(r) {
       const f = (s) => s.replace(/\{(\w+)\}/g, (_m, k) => (r[k] != null ? r[k] : ''));
@@ -515,7 +523,7 @@
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
       sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName,
       riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue,
-      clusterize, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, BUNDLE_MAX, ruleText };
+      trojanBundles, trojanMeta, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, ruleText };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
@@ -1938,6 +1946,7 @@
     #agtw .bfn{display:flex;flex-direction:column;gap:2px;background:#221A3A;border:1px solid #5B47A8;border-radius:9px;padding:6px 8px;color:#D2C5FF;flex:none;max-width:120px}
     #agtw .bln{flex:1;height:1px;background:#5B47A8;min-width:12px}
     #agtw .bws{display:flex;flex-direction:column;gap:4px;width:150px;flex:none}
+    #agtw .bws2{display:flex;flex-direction:column;gap:4px}
     #agtw .bw{display:flex;gap:6px;background:var(--bg2);border:1px solid var(--ln);border-radius:7px;padding:3px 6px;font-size:11px}
     #agtw .bchip{font-size:10.5px;border-radius:999px;padding:1px 8px;border:1px solid var(--ln);color:#C9CDD4}
     #agtw .bchip.dn{background:#2A1418;border-color:#5C2A33;color:var(--sell)}#agtw .bchip.y{background:#2A2412;border-color:#5A4A1C;color:#FFE08A}#agtw .bchip.vi{background:#221A3A;border-color:#5B47A8;color:#D2C5FF}
@@ -2548,20 +2557,24 @@
     }
 
     // ---------------------------------------------------------- Trojan bundles (Trojan tabs only)
-    // Data: Trojan's own POST /v1/tokens/bundled-positions (top holders of a coin, with funders). The widget reads the
-    // answers Trojan's page already gets (fetch / XHR hook), and replays that same request (same headers) for the coin
-    // on screen when the page didn't ask, and — one Trojan tab at a time (lease) — for the coins you hold, every 15s.
-    // Each answer → clusters (Core.clusterize) → a history point → built-in events (feed, badges) + your rules.
-    const TB = env === 'trojan', BP_PATH = '/v1/tokens/bundled-positions', TB_KEEP = 10 * 60e3;
-    const bsnap = {}; // mint → { at, rows, cl, sum, hist }
-    let bpTpl = null, bpFetch = null, tbBusy = false;
+    // Data: the two answers Trojan's holders table is built from (Core.trojanBundles): /v1/tokens/bundled-positions
+    // (one row per bundle, Trojan's own grouping) and /v1/tokens/positions (one row per wallet). The widget reads the
+    // answers Trojan's page already gets (fetch / XHR hook), replays the same requests (same headers) for the coin on
+    // screen when the page didn't ask, and — one Trojan tab at a time (lease) — for the coins you hold, every ~15s.
+    // Bundle names, wallet counts and members come from Trojan's table itself while it is on screen (Core.trojanMeta).
+    // Each bundles answer → a history point → built-in events (feed, badges) + your rules.
+    const TB = env === 'trojan', TB_KEEP = 10 * 60e3, TB_EP = { bp: '/v1/tokens/bundled-positions', pos: '/v1/tokens/positions' };
+    const epOf = (u) => { try { const p = new URL(String(u), location.href).pathname; return p.endsWith(TB_EP.bp) ? 'bp' : p.endsWith(TB_EP.pos) ? 'pos' : null; } catch (_) { return null; } };
+    const bsnap = {}; // mint → { bp, bpAt, pos, posAt, meta, at, cl, sum, hist, wait }
+    const tbTpl = {}; // kind → Trojan's own request { url, hdr, body } (replayed for other coins)
+    let bpFetch = null, tbBusy = false;
     const tbMe = id();
     const FEED_DEF = [ // built-in detectors for the feed, badges and the "last move" column (not actions)
       { id: 'f-sell', who: 'any', when: 'sell', pct: 20, windowSec: 60 }, { id: 'f-exit', who: 'any', when: 'exit', pct: 90 },
       { id: 'f-acc', who: 'any', when: 'acc', sol: 1, windowSec: 300 }, { id: 'f-send', who: 'any', when: 'send', windowSec: 60 },
       { id: 'f-new', who: 'any', when: 'new', pct: 2 }, { id: 'f-out', who: 'any', when: 'allout', pct: 2 },
     ];
-    const FEED_TAG = { sell: ['DUMP', 'dump'], exit: ['EXIT', 'exit'], acc: ['ACCUM', 'acc'], send: ['SPLIT', 'watch'], new: ['NEW', 'watch'], allout: ['ALL OUT', 'acc'], funder: ['FUNDER', 'watch'] };
+    const FEED_TAG = { sell: ['DUMP', 'dump'], exit: ['EXIT', 'exit'], acc: ['ACCUM', 'acc'], send: ['SPLIT', 'watch'], new: ['NEW', 'watch'], allout: ['ALL OUT', 'acc'], funder: ['WATCHED', 'watch'] };
     const loadFeed = () => (GM_getValue('tbFeed', []) || []).filter((f) => Date.now() - f.at < 6 * 3600e3);
     const shortA = (a) => (a ? a.slice(0, 4) + '…' + a.slice(-4) : '');
     const bundlePx = (mint) => { const mc = mcapNow(mint); return mc > 0 && usdRate > 0 ? mc / usdRate / 1e9 : null; };
@@ -2570,22 +2583,48 @@
       try { if (!h) return o; if (typeof h.forEach === 'function' && !Array.isArray(h)) h.forEach((v, k) => { o[k] = v; }); else if (Array.isArray(h)) h.forEach(([k, v]) => { o[k] = v; }); else Object.assign(o, h); } catch (_) {}
       return o;
     }
-    function bpIngest(url, body, hdr, j, src) {
+    // Trojan's holders table, while on screen: its bundle rows carry the name, wallet count, confidence and members
+    let metaAt = 0, metaCache = {};
+    function readTrojanMeta() {
+      if (Date.now() - metaAt < 2500) return metaCache;
+      metaAt = Date.now();
+      const rows = [], seen = new Set();
+      let n = 0;
+      for (const el of document.querySelectorAll('div,tr')) {
+        if (++n > 8000) break;
+        const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber'));
+        let f = fk && el[fk];
+        for (let i = 0; i < 4 && f; i++, f = f.return) { const r = f.memoizedProps && f.memoizedProps.row; if (r && r.type === 'aggregate' && !seen.has(r.id)) { seen.add(r.id); rows.push(r); break; } }
+      }
+      return (metaCache = Core.trojanMeta(rows));
+    }
+    function tbCapture(kind, url, body, hdr, j, src) {
       let mint = null;
       try { mint = JSON.parse(body).tokenAddress; } catch (_) {}
-      if (!mint || !j || !Array.isArray(j.data)) return;
-      if (src === 'page') bpTpl = { url: new URL(url, location.href).href, hdr, body, at: Date.now() };
-      tbIngest(mint, j.data);
+      if (!kind || !mint || !j || !Array.isArray(j.data)) return;
+      if (src === 'page') tbTpl[kind] = { url: new URL(String(url), location.href).href, hdr, body, at: Date.now() };
+      const s = bsnap[mint] || (bsnap[mint] = { hist: [], meta: {} });
+      if (kind === 'pos') { s.pos = j.data; s.posAt = Date.now(); if (s.bp && (s.wait || !s.cl)) tbCompute(mint, s, true); return; }
+      s.bp = j.data; s.bpAt = Date.now();
+      tbCompute(mint, s, true);
     }
-    function tbIngest(mint, rows, now) {
+    function tbCompute(mint, s, fresh, now) {
       now = now || Date.now();
-      const cl = Core.clusterize(rows, 1e9, bundlePx(mint)), s = bsnap[mint] || (bsnap[mint] = { hist: [] });
-      Object.assign(s, { at: now, rows, cl, sum: Core.bundleSummary(cl, rows), hist: Core.pushPoint(s.hist, Core.bundlePoint(cl, now), TB_KEEP) });
-      tbFeedScan(mint, s, now);
-      tbRules(mint, s, now);
+      if (mint === getMint() && !document.hidden) Object.assign(s.meta, readTrojanMeta());
+      const pos = s.pos && now - (s.posAt || 0) < 90000 ? s.pos : null;
+      if (!pos && !Object.keys(s.meta).length) { s.wait = true; return; } // can't tell bundles from lone wallets yet
+      const cl = Core.trojanBundles(s.bp, pos, s.meta, 1e9, bundlePx(mint));
+      Object.assign(s, { wait: false, at: now, cl, sum: Core.bundleSummary(cl, pos || s.bp) });
+      if (fresh) {
+        s.hist = Core.pushPoint(s.hist, Core.bundlePoint(cl, now), TB_KEEP);
+        tbFeedScan(mint, s, now);
+        tbRules(mint, s, now);
+      }
       if (mint === getMint() || st.bund.view === 'rules') render();
       scanCardsSoon();
     }
+    // tests / manual: feed one snapshot (bundled rows + wallet rows)
+    function tbIngest(mint, bp, pos, now) { const s = bsnap[mint] || (bsnap[mint] = { hist: [], meta: {} }); Object.assign(s, { bp, bpAt: now || Date.now(), pos, posAt: now || Date.now() }); tbCompute(mint, s, true, now); }
     let scT = null;
     const scanCardsSoon = () => { if (!scT) scT = setTimeout(() => { scT = null; scanCards(); renderBar(); }, 300); };
     if (TB) {
@@ -2594,10 +2633,10 @@
       PW.fetch = function (input, init) {
         const p = of.apply(this, arguments);
         try {
-          const url = typeof input === 'string' ? input : input && input.url;
-          if (url && String(url).includes(BP_PATH)) {
+          const url = typeof input === 'string' ? input : input && input.url, kind = url && epOf(url);
+          if (kind) {
             const body = init && typeof init.body === 'string' ? init.body : null, hdr = hdrObj((init && init.headers) || (input && input.headers));
-            p.then((r) => r.clone().json()).then((j) => bpIngest(url, body, hdr, j, 'page')).catch(() => {});
+            p.then((r) => r.clone().json()).then((j) => tbCapture(kind, url, body, hdr, j, 'page')).catch(() => {});
           }
         } catch (_) {}
         return p;
@@ -2605,26 +2644,28 @@
       const XP = PW.XMLHttpRequest && PW.XMLHttpRequest.prototype;
       if (XP) {
         const oo = XP.open, os = XP.send, oh = XP.setRequestHeader;
-        XP.open = function (m, u) { this.__agtwBp = String(u || '').includes(BP_PATH) ? { u, h: {} } : null; return oo.apply(this, arguments); };
+        XP.open = function (m, u) { const k = epOf(u); this.__agtwBp = k ? { k, u, h: {} } : null; return oo.apply(this, arguments); };
         XP.setRequestHeader = function (k, v) { if (this.__agtwBp) this.__agtwBp.h[k] = v; return oh.apply(this, arguments); };
         XP.send = function (b) {
           const x = this, c = x.__agtwBp;
-          if (c) x.addEventListener('load', () => { try { bpIngest(c.u, typeof b === 'string' ? b : null, c.h, JSON.parse(x.responseText), 'page'); } catch (_) {} });
+          if (c) x.addEventListener('load', () => { try { tbCapture(c.k, c.u, typeof b === 'string' ? b : null, c.h, JSON.parse(x.responseText), 'page'); } catch (_) {} });
           return os.apply(this, arguments);
         };
       }
     }
-    async function bpGet(mint) { // replay Trojan's request for another coin
-      if (!bpTpl || !bpFetch) return false;
+    async function tbReplay(kind, mint) { // Trojan's own request, for another coin
+      const t = tbTpl[kind];
+      if (!t || !bpFetch) return false;
       let body;
-      try { body = JSON.stringify(Object.assign(JSON.parse(bpTpl.body), { tokenAddress: mint })); } catch (_) { return false; }
+      try { body = JSON.stringify(Object.assign(JSON.parse(t.body), { tokenAddress: mint })); } catch (_) { return false; }
       try {
-        const r = await bpFetch(bpTpl.url, { method: 'POST', headers: bpTpl.hdr, body, credentials: 'include' });
+        const r = await bpFetch(t.url, { method: 'POST', headers: t.hdr, body, credentials: 'include' });
         if (!r.ok) return false;
-        bpIngest(bpTpl.url, body, bpTpl.hdr, await r.json(), 'poll');
+        tbCapture(kind, t.url, body, t.hdr, await r.json(), 'poll');
         return true;
       } catch (_) { return false; }
     }
+    const tbGet = async (mint) => { await tbReplay('pos', mint); return tbReplay('bp', mint); };
     function tbLeader() {
       const l = GM_getValue('tbLead', null), now = Date.now();
       if (!l || now - l.at > 9000 || l.id === tbMe) { GM_setValue('tbLead', { id: tbMe, at: now }); return true; }
@@ -2636,11 +2677,12 @@
       try {
         const cur = getMint(), now = Date.now();
         // the coin on screen: Trojan normally asks itself; if it hasn't for 8s, ask for it
-        if (cur && !document.hidden && (!bsnap[cur] || now - bsnap[cur].at > 8000)) await bpGet(cur);
+        if (cur && !document.hidden && (!bsnap[cur] || now - (bsnap[cur].bpAt || 0) > 8000)) await tbGet(cur);
+        else if (cur && bsnap[cur] && bsnap[cur].wait) tbCompute(cur, bsnap[cur], true); // Trojan's table may have appeared meanwhile
         if (!st.bund.bg || !tbLeader()) return;
         for (const m of Object.keys(heldAll).filter((x) => x !== cur && !pendingGone[x]).slice(0, 8)) {
-          if (bsnap[m] && Date.now() - bsnap[m].at < 12000) continue;
-          await bpGet(m);
+          if (bsnap[m] && Date.now() - (bsnap[m].bpAt || 0) < 12000) continue;
+          await tbGet(m);
           await sleep(500);
         }
       } finally { tbBusy = false; }
@@ -2706,7 +2748,7 @@
     }
     function armRule(dr) {
       const r = Object.assign(RULE_DEF(), dr, { id: id(), on: true, mode: dr.then === 'buy' && !dr.mode ? 'paper' : dr.mode || st.mode, fired: 0, created: Date.now() });
-      if (r.who === 'funder' && !r.funder && !st.bund.watch.length) return toast('Watch a funder first (open a bundle → Watch funder)', true);
+      if (r.who === 'funder' && !r.funder && !st.bund.watch.length) return toast('Watch a bundle first (open a bundle → Watch bundle everywhere)', true);
       return (async () => {
         if (r.mode === 'live' && (r.then === 'sell' || r.then === 'buy' || r.then === 'init') && !(await ask({ tone: 'live', title: 'Arm LIVE bundle rule', sub: Core.ruleText(r),
           note: 'Runs in your Trojan tab(s) with your AG wallets. Safety rails apply.', actions: [{ label: 'Cancel', v: null, kind: 'ghost' }, { label: 'Arm LIVE', v: 'go', kind: 'danger' }] }))) return;
@@ -2734,10 +2776,10 @@
           ['SNIPERS', S.snipers, `${S.snipersOut} exited`], ['DEV-LINKED', S.dev, 'got dev tokens', S.dev ? 'y' : '']].map(([k, v, u, c]) => `<div class="itile"><span>${k}</span><b class="n ${c || ''}">${v}</b><small>${u}</small></div>`).join('')}</div>
         <div class="bsup"><div class="pl n"><span>SUPPLY HELD BY BUNDLES</span><span>${S.held.toFixed(1)}%</span></div>
           <div class="bbar">${rows.map((c, i) => `<i style="width:${Math.min(100, c.pct).toFixed(2)}%;background:${CL_COL[i % CL_COL.length]}"></i>`).join('')}</div></div>
-        ${rows.length ? `<div class="bth"><span class="sp">BUNDLE (FUNDER)</span><span class="bc1">HOLDS</span><span class="bc2">LAST MOVE</span><span class="bc3">PNL ◎</span></div>
+        ${rows.length ? `<div class="bth"><span class="sp">BUNDLE (TROJAN)</span><span class="bc1">HOLDS</span><span class="bc2">LAST MOVE</span><span class="bc3">PNL ◎</span></div>
         <div class="blist">${rows.map((c, i) => { const [mv, k] = moveOf(mint, c); return `<button class="brow" data-bsel="${c.id}" title="Open this bundle">
-          <span class="bdot" style="background:${CL_COL[i % CL_COL.length]}"></span><span class="bn2"><span><b class="n">${shortA(c.id)}</b> <span class="bwn n">${c.n} wallets</span></span>
-          <span class="mut sm">${escH([c.bundled ? 'bundled' : '', c.sniper ? 'snipers' : '', c.dev ? 'dev-linked' : '', c.sameAmt ? `same funding ${c.fundAmt} ◎` : ''].filter(Boolean).join(' · ') || 'same funder')}</span></span>
+          <span class="bdot" style="background:${CL_COL[i % CL_COL.length]}"></span><span class="bn2"><span><b class="n">${escH(c.label || shortA(c.id))}</b> <span class="bwn n">${c.n ? c.n + ' wallets' : 'bundle'}</span></span>
+          <span class="mut sm">${escH([c.bundled ? 'bundled' : '', c.sniper ? 'snipers' : '', c.dev ? 'dev-linked' : '', c.conf ? c.conf + ' confidence' : ''].filter(Boolean).join(' · ') || 'linked wallets')}</span></span>
           <span class="bc1 n">${c.pct.toFixed(1)}%</span><span class="bc2"><span class="mvp ${k}">${escH(mv)}</span></span><span class="bc3 n ${c.pnl >= 0 ? 'up' : 'dn'}">${c.pnl >= 0 ? '+' : '−'}${sol(Math.abs(c.pnl))}</span>
           <span class="bleft"><i style="width:${(c.left * 100).toFixed(0)}%;background:${CL_COL[i % CL_COL.length]}"></i></span></button>`; }).join('')}</div>` : '<div class="mut sm">No bundle among the top holders (no 2+ wallets with the same funder).</div>'}
         ${h ? `<div class="iyou"><span class="lb">YOU</span><b class="n ${h.pnl >= 0 ? 'up' : 'dn'}">◎ ${sol(h.worth)} · ${h.pnl >= 0 ? '+' : '−'}${sol(Math.abs(h.pnl))}</b><span class="sp"></span>${st.bund.rules.some((r) => r.on && r.then === 'sell' && r.scope !== 'any') ? '<span class="ptag">armed: sell if they dump</span>' : ''}</div>` : ''}
@@ -2747,24 +2789,26 @@
     function bundClusterHtml(mint, s, c) {
       const i = s.cl.indexOf(c), col = CL_COL[i % CL_COL.length], [mv, k] = moveOf(mint, c), watched = st.bund.watch.includes(c.id);
       const evs = loadFeed().filter((f) => f.mint === mint && f.id === c.id).map((f) => ({ t: f.at, kind: (FEED_TAG[f.kind] || ['MOVE'])[0], text: f.text }));
+      if (tsMs(c.lastSell)) evs.push({ t: tsMs(c.lastSell), kind: 'SELL', text: `bundle last sell · ◎ ${sol(c.earned)} out so far (${c.sells} sells)` });
+      if (tsMs(c.lastBuy)) evs.push({ t: tsMs(c.lastBuy), kind: 'BUY', text: `bundle last buy · ◎ ${sol(c.spent)} in so far (${c.buys} buys)` });
       for (const w of c.wallets) {
         if (tsMs(w.lastSell)) evs.push({ t: tsMs(w.lastSell), kind: 'SELL', text: `${shortA(w.addr)} last sell · has sold ${kfmt(w.sold)}` });
         if (tsMs(w.lastBuy)) evs.push({ t: tsMs(w.lastBuy), kind: 'BUY', text: `${shortA(w.addr)} last buy · ◎ ${sol(w.spent)} in` });
       }
       evs.sort((a, b) => b.t - a.t);
-      return `<div class="sh"><button class="lk" data-bsel="">‹ Bundles</button><span class="bdot" style="background:${col}"></span><b class="n">${shortA(c.id)}</b><span class="bwn n">${c.n} wallets</span><span class="sp"></span><span class="mvp ${k}">${escH(mv)}</span></div>
+      return `<div class="sh"><button class="lk" data-bsel="">‹ Bundles</button><span class="bdot" style="background:${col}"></span><b class="n">${escH(c.label || shortA(c.id))}</b><span class="bwn n">${c.n ? c.n + ' wallets' : 'bundle'}</span><span class="sp"></span><span class="mvp ${k}">${escH(mv)}</span></div>
         <div class="g3s three"><div class="sb"><span class="lb">BOUGHT</span><span class="n v up">◎ ${sol(c.spent)}</span><span class="n u">${kfmt(c.inflow)} tokens</span></div>
           <div class="sb"><span class="lb">SOLD</span><span class="n v dn">◎ ${sol(c.earned)}</span><span class="n u">${c.sells} sells</span></div>
           <div class="sb"><span class="lb">PNL</span><span class="n v ${c.pnl >= 0 ? 'up' : 'dn'}">${c.pnl >= 0 ? '+' : '−'}${sol(Math.abs(c.pnl))} ◎</span><span class="n u">${c.value != null ? 'incl. ◎ ' + sol(c.value) + ' held' : 'realized'}</span></div></div>
         <div class="bsup"><div class="pl n"><span>HOLDS ${c.pct.toFixed(1)}% OF SUPPLY</span><span>${(c.left * 100).toFixed(0)}% of its bag left</span></div><div class="bbar"><i style="width:${(c.left * 100).toFixed(0)}%;background:${col}"></i></div></div>
-        <span class="lb">FUNDING</span>
-        <div class="bfund"><div class="bfn"><b class="n">${shortA(c.id)}</b><span class="sm">funder${c.fundAmt ? ` · sent ${c.fundAmt} ◎ each` : ''}</span></div><i class="bln"></i>
-          <div class="bws">${c.wallets.slice(0, 8).map((w) => `<div class="bw"><span class="n">${shortA(w.addr)}</span><span class="sp"></span><span class="n ${w.bal > 0 ? '' : 'mut'}">${c.bal > 0 ? ((w.bal / c.bal) * 100).toFixed(0) + '%' : 'out'}</span></div>`).join('')}${c.wallets.length > 8 ? `<span class="mut sm">+${c.wallets.length - 8} more</span>` : ''}</div></div>
-        <div class="chips">${[c.bundled && ['bundled at launch', 'dn'], c.sameAmt && [`same funding amount (${c.fundAmt} ◎)`, 'dn'], c.sniper && ['snipers', 'y'], c.dev && ['got tokens from the dev / insiders', 'y'], watched && ['watched funder', 'vi']].filter(Boolean).map(([t, cc]) => `<span class="bchip ${cc}">${escH(t)}</span>`).join('')}</div>
+        <span class="lb">WALLETS · TROJAN'S GROUPING${c.conf ? ' · ' + escH(c.conf) + ' confidence' : ''}</span>
+        ${c.wallets.length ? `<div class="bws2">${c.wallets.slice(0, 10).map((w) => `<div class="bw"><span class="n">${shortA(w.addr)}</span><span class="mut sm">◎ ${sol(w.spent)} in${w.earned ? ' · ◎ ' + sol(w.earned) + ' out' : ''}</span><span class="sp"></span><span class="n ${w.bal > 0 ? '' : 'mut'}">${w.bal > 0 ? kfmt(w.bal) : 'out'}</span></div>`).join('')}${c.wallets.length > 10 ? `<span class="mut sm">+${c.wallets.length - 10} more</span>` : ''}</div>`
+          : `<div class="mut sm">Trojan links ${c.n ? c.n + ' wallets' : 'several wallets'} here (primary ${shortA(c.id)}). Its holders table lists them; open it to see them here.</div>`}
+        <div class="chips">${[c.bundled && ['bundled at launch', 'dn'], c.sniper && ['snipers', 'y'], c.dev && ['got tokens from the dev / insiders', 'y'], c.conf && [`Trojan: ${c.conf} confidence`, c.conf === 'high' ? 'dn' : ''], watched && ['watched bundle', 'vi']].filter(Boolean).map(([t, cc]) => `<span class="bchip ${cc}">${escH(t)}</span>`).join('')}</div>
         <span class="lb">WHAT IT DID</span>
         <div class="btl">${evs.slice(0, 8).map((e) => `<div class="bev"><span class="n mut">${agoS(Date.now() - e.t)}</span><span class="mvp ${e.kind === 'BUY' || e.kind === 'ACCUM' ? 'acc' : e.kind === 'SELL' || e.kind === 'DUMP' ? 'dump' : 'watch'}">${escH(e.kind)}</span><span>${escH(e.text)}</span></div>`).join('') || '<span class="mut sm">Nothing yet.</span>'}</div>
         <div class="g2"><button class="btn danger" data-bsell="${mint}" ${heldAll[mint] ? '' : 'disabled'}>Sell my bag · 100%</button><button class="btn" data-brule="${c.id}">⚡ Rule for this bundle</button>
-          <button class="btn" data-bwatch="${c.id}">${watched ? 'Unwatch funder' : 'Watch funder everywhere'}</button><button class="btn" data-cp="${c.id}">Copy funder</button></div>`;
+          <button class="btn" data-bwatch="${c.id}">${watched ? 'Unwatch bundle' : 'Watch bundle everywhere'}</button><button class="btn" data-cp="${c.id}">Copy address</button></div>`;
     }
     function bundRulesHtml(mint) {
       const d = ui.bdraft || (ui.bdraft = RULE_DEF()), opt = (k, list) => `<select data-bf="${k}" aria-label="${k}">${list.map(([v, l]) => `<option value="${v}" ${String(d[k]) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
@@ -2773,7 +2817,7 @@
       const preview = Object.assign({}, d, { mode: d.then === 'buy' ? (d.mode || 'paper') : st.mode });
       const feed = loadFeed().slice(-8).reverse();
       return `<div class="sh"><button class="lk" data-a="bview">‹ Bundles</button><b>Rules</b><span class="sp"></span><span class="mut sm">run in this Trojan tab</span></div>
-        <div class="bform"><div class="eg two"><label>When${opt('who', [['any', 'any bundle'], ['top3', 'a top-3 bundle'], ['min', 'a bundle holding ≥ X%'], ['dev', 'a dev-linked bundle'], ['snipers', 'a sniper bundle'], ['funder', 'a watched funder']])}</label>
+        <div class="bform"><div class="eg two"><label>When${opt('who', [['any', 'any bundle'], ['top3', 'a top-3 bundle'], ['min', 'a bundle holding ≥ X%'], ['dev', 'a dev-linked bundle'], ['snipers', 'a sniper bundle'], ['funder', 'a watched bundle']])}</label>
           <label>does${opt('when', [['sell', 'sells part of its bag'], ['exit', 'is out (sold most of it)'], ['acc', 'accumulates (buys more)'], ['send', 'sends tokens to wallets'], ['new', 'appears (new bundle)'], ['allout', 'ALL bundles are out'], ['funder', 'shows up on a coin']])}</label></div>
           <div class="eg">${d.who === 'min' ? n('minPct', 'holding ≥ %', 0.5) : ''}${needs.includes('pct') ? n('pct', d.when === 'sell' ? 'sold ≥ % of bag' : d.when === 'exit' ? 'sold ≥ % overall' : d.when === 'allout' ? 'all hold ≤ % supply' : 'holds ≥ %', 1) : ''}${needs.includes('sol') ? n('sol', 'bought ≥ ◎', 0.1) : ''}${needs.includes('windowSec') ? n('windowSec', 'within (s)', 5) : ''}</div>
           <div class="eg two"><label>On${opt('scope', [['this', 'this coin'], ['held', 'coins I hold'], ['any', 'any coin I open']])}</label>
@@ -2785,7 +2829,7 @@
         ${st.bund.rules.map((r) => `<div class="trw"><div class="orr"><span class="otag ${r.then === 'sell' || r.then === 'init' ? 'tpmc' : r.then === 'buy' ? 'dip' : 'trail'}">${{ sell: 'SELL', init: 'INIT', buy: 'BUY', hide: 'HIDE', alert: 'ALERT' }[r.then]}</span><span class="ol" title="${escH(Core.ruleText(r))}">${escH(Core.ruleText(r))}</span><span class="sp"></span>
           <label class="ck" title="On / off"><input type="checkbox" data-btog="${r.id}" ${r.on ? 'checked' : ''}></label><button class="xx" data-bdel="${r.id}" aria-label="Delete rule">×</button></div>
           <div class="pl n"><span>${r.mode.toUpperCase()} · fired ${r.fired || 0}×${r.lastAt ? ' · last ' + agoS(Date.now() - r.lastAt) + ' ago' : ''}</span><span>${r.once ? 'once per coin' : 'cooldown ' + r.cooldownMin + ' min'}</span></div></div>`).join('') || '<div class="mut sm">No rule yet.</div>'}
-        <div class="sh"><b class="sm2">Feed</b><span class="sp"></span><span class="mut sm">${st.bund.bg ? (bpTpl ? 'watching coins you hold' : 'open any coin once to watch the coins you hold') : 'background watch off'}</span></div>
+        <div class="sh"><b class="sm2">Feed</b><span class="sp"></span><span class="mut sm">${st.bund.bg ? (tbTpl.bp && tbTpl.pos ? 'watching coins you hold' : 'open a coin\'s Holders tab once to watch the coins you hold') : 'background watch off'}</span></div>
         ${feed.map((f) => `<div class="bev"><span class="n mut">${agoS(Date.now() - f.at)}</span><span class="mvp ${(FEED_TAG[f.kind] || ['', 'watch'])[1]}">${(FEED_TAG[f.kind] || ['MOVE'])[0]}</span><button class="lk2" data-open="${f.mint}">${escH(f.sym || shortA(f.mint))}</button><span>${escH(f.text)}</span></div>`).join('') || '<span class="mut sm">No bundle move seen yet.</span>'}
         <label class="ck"><input type="checkbox" data-s="bund.bg" ${st.bund.bg ? 'checked' : ''}>Also watch the coins I hold in the background (every 15s, one Trojan tab)</label>`;
     }
@@ -2796,7 +2840,7 @@
       const c = s && ui.bundSel ? s.cl.find((x) => x.id === ui.bundSel) : null;
       const body = B.view === 'rules' ? bundRulesHtml(mint)
         : !mint ? `<div class="mut sm">Open a coin: bundles come from Trojan's holders list.</div>${loadFeed().length ? '<button class="btn" data-a="bview">Rules & feed ›</button>' : ''}`
-        : !s ? `<div class="mut sm">Waiting for Trojan's holders data…${bpTpl ? '' : ' If nothing comes, open the Holders tab of this coin once.'}</div>`
+        : !s || s.wait || !s.cl ? `<div class="mut sm">Waiting for Trojan's holders data… If nothing comes, open this coin's Holders tab once.</div>`
         : c ? bundClusterHtml(mint, s, c) : bundListHtml(mint, s);
       return `<div class="intel bund"><div class="ii"><div class="sh ihd"><span class="agt">BUNDLES</span><b>${escH(mint ? sym || tail(mint) : '')}</b><span class="sp"></span>${s ? `<span class="lvd"></span><span class="mut n sm">${agoS(Date.now() - s.at)}</span>` : ''}
         <button class="ib ord ${on ? 'has' : ''} ${B.view === 'rules' ? 'on' : ''}" data-a="bview" title="Bundle rules">${ICON.bolt}<span class="n">${on || ''}</span></button><button class="ib" data-a="bund" title="Collapse">${ICON.chev}</button></div>${body}</div></div>`;
@@ -3597,7 +3641,7 @@
       if (d.ha) return healthAct(d.ha);
       if (d.oc) return cancelOrder(d.oc);
       if (d.bsel != null && TB) { ui.bundSel = d.bsel || null; return render(); }
-      if (d.bwatch) { const w = st.bund.watch; if (w.includes(d.bwatch)) st.bund.watch = w.filter((x) => x !== d.bwatch); else w.push(d.bwatch); save(); toast(w.includes(d.bwatch) ? 'Funder watched on every coin you open or hold' : 'Funder unwatched'); return render(); }
+      if (d.bwatch) { const w = st.bund.watch; if (w.includes(d.bwatch)) st.bund.watch = w.filter((x) => x !== d.bwatch); else w.push(d.bwatch); save(); toast(w.includes(d.bwatch) ? 'Bundle watched on every coin you open or hold' : 'Bundle unwatched'); return render(); }
       if (d.brule) { ui.bdraft = Object.assign(RULE_DEF(), { who: 'funder', funder: d.brule, scope: 'any', then: 'alert' }); st.bund.view = 'rules'; if (!st.bund.watch.includes(d.brule)) st.bund.watch.push(d.brule); save(); return render(); }
       if (d.bsell) return execSell({ mint: d.bsell, symb: (heldAll[d.bsell] || {}).sym, pct: 100, interactive: true });
       if (d.bq) { return armRule(d.bq === 'dump' ? { who: 'any', when: 'sell', pct: 30, windowSec: 60, scope: 'held', then: 'sell', sellPct: 100, cooldownMin: 5, once: true } : { who: 'any', when: 'sell', pct: 20, windowSec: 60, scope: 'held', then: 'alert', cooldownMin: 5, once: false }); }
@@ -4083,7 +4127,7 @@
       if (TB) { setInterval(() => { tbTick().catch(() => {}); }, 3000); GM_addValueChangeListener('tbFeed', (_k, _o, _v, remote) => { if (remote) { render(); scanCardsSoon(); } }); }
       try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { bsnap, tbIngest, bpTpl: () => bpTpl, agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { bsnap, tbIngest, tbTpl, agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s

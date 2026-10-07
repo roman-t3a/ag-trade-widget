@@ -509,31 +509,40 @@ async function main() {
     }
     // ---------------------------------------------------------------- 10e · Trojan bundles: panel, cluster, rules (sell on dump, reverse buy), background watch
     {
-      const F1 = 'u6PJFunderAAAAAAAAAAAAAAAAAAAAAAAAAAAAXq2w', F2 = '5tzFFunderBBBBBBBBBBBBBBBBBBBBBBBBBBBBuAi9';
-      const wr = (i, f, bal, o = {}) => ({ walletAddress: 'H' + String(i).padStart(43, 'h'), currentTokenBalance: bal, amountTokensBought: o.bought ?? bal, amountTokensReceived: 0, amountTokensMinted: 0,
-        amountTokensSold: 0, amountNativeSpent: 1, amountNativeEarned: o.earned ?? 0, numBuys: 1, numSells: 0, numTransfersOut: 0, amountSniped: o.sniped ?? 0, amountBundled: 0,
+      // Trojan's two answers: bundled-positions (one row per bundle, under its primary wallet) + positions (one row per wallet)
+      const F1 = 'GZVSprimaryAAAAAAAAAAAAAAAAAAAAAAAAAAAALM9b', F2 = '5oHSprimaryBBBBBBBBBBBBBBBBBBBBBBBBBBBBU3YU', LONE = 'AYEuLoneWalletCCCCCCCCCCCCCCCCCCCCCCCCCzP88';
+      const wr = (w, bal, o = {}) => ({ walletAddress: w, currentTokenBalance: bal, amountTokensBought: o.bought ?? bal, amountTokensReceived: 0, amountTokensMinted: 0,
+        amountTokensSold: 0, amountNativeSpent: o.spent ?? 1, amountNativeEarned: o.earned ?? 0, numBuys: o.buys ?? 1, numSells: 0, numTransfersOut: 0, amountSniped: o.sniped ?? 0, amountBundled: 0,
         amountReceivedFromDev: o.dev ?? 0, amountReceivedFromInsider: 0, lastBuyTimestamp: Math.floor(Date.now() / 1000) - 600, lastSellTimestamp: 0,
-        fundingInfo: { walletAddress: 'H' + i, firstNativeFunderAddress: f, firstNativeFundingAmount: 1.25 } });
-      const mk = (a, b) => [wr(1, F1, a[0], { bought: 60e6 / 2, sniped: 1 }), wr(2, F1, a[1], { bought: 60e6 / 2 }), wr(3, F2, b[0], { bought: 15e6, dev: 3 }), wr(4, F2, b[1], { bought: 15e6 })];
-      const bp = { [MINT]: mk([30e6, 30e6], [15e6, 15e6]), [MINT2]: mk([5e6, 5e6], [1e6, 1e6]) }, seen = [];
+        fundingInfo: { walletAddress: w, firstNativeFunderAddress: 'Fund' + w.slice(4), firstNativeFundingAmount: 1 } });
+      const mk = (a, b) => ({ bp: [wr(LONE, 80e6), wr(F1, a, { bought: 60e6, buys: 10, sniped: 1, spent: 2 }), wr(F2, b, { bought: 30e6, buys: 8, dev: 3 })],
+        pos: [wr(LONE, 80e6), wr(F1, Math.round(a / 4), { buys: 2 }), wr(F2, Math.round(b / 3), { buys: 3 })] });
+      const bp = { [MINT]: mk(60e6, 30e6), [MINT2]: mk(10e6, 2e6) }, seen = [];
       const route = async (r, u) => {
-        if (!u.pathname.endsWith('/v1/tokens/bundled-positions')) return false;
+        const kind = u.pathname.endsWith('/v1/tokens/bundled-positions') ? 'bp' : u.pathname.endsWith('/v1/tokens/positions') ? 'pos' : null;
+        if (!kind) return false;
         const cors = { 'access-control-allow-origin': 'https://trojan.com', 'access-control-allow-credentials': 'true', 'access-control-allow-headers': 'content-type,x-test-auth', 'access-control-allow-methods': 'POST,OPTIONS' };
         if (r.request().method() === 'OPTIONS') { await r.fulfill({ status: 204, headers: cors }); return true; }
         let b = {}; try { b = r.request().postDataJSON(); } catch (_) {}
-        seen.push({ mint: b.tokenAddress, auth: r.request().headers()['x-test-auth'] });
-        await r.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ data: bp[b.tokenAddress] || [] }) });
+        seen.push({ kind, mint: b.tokenAddress, auth: r.request().headers()['x-test-auth'] });
+        await r.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ data: (bp[b.tokenAddress] || { bp: [], pos: [] })[kind] }) });
         return true;
       };
-      // Trojan's page polls its holders endpoint itself (with its auth header)
-      const page0 = `<script>setInterval(() => fetch('https://data-gateway.api.trojan.com/v1/tokens/bundled-positions', { method: 'POST', credentials: 'include',
-        headers: { 'content-type': 'application/json', 'x-test-auth': 'tok-1' }, body: JSON.stringify({ chain: 'solana', tokenAddress: '${MINT}', includeFundingInfo: true, limit: 100 }) }).catch(() => {}), 700);</script>`;
+      // Trojan's page polls both itself (with its auth header, by XHR like the real site); its holders table row for B1 carries the name + members
+      const page0 = `<div id="trow">GZVS...LM9b 5</div><script>
+        const poll = (path, extra) => { const x = new XMLHttpRequest(); x.open('POST', 'https://data-gateway.api.trojan.com' + path); x.setRequestHeader('content-type', 'application/json'); x.setRequestHeader('x-test-auth', 'tok-1');
+          x.send(JSON.stringify(Object.assign({ chain: 'solana', tokenAddress: '${MINT}', limit: 100, includeFundingInfo: true }, extra))); };
+        setInterval(() => { poll('/v1/tokens/positions', { orderTokenAmount: 'desc' }); poll('/v1/tokens/bundled-positions', {}); }, 700);
+        const kid = (w, bal) => ({ walletAddress: w, currentTokenBalance: bal, amountTokensBought: bal, amountNativeSpent: 0.4, amountNativeEarned: 0, amountTokensSold: 0 });
+        document.getElementById('trow').__reactFiber$t = { memoizedProps: { row: { type: 'aggregate', id: 'aggregate-${F1}', walletLabel: 'GZVS...LM9b', primaryWalletAddress: 'GZVSrealPrimaryWalletxxxxxxxxxxxxxxxxxxLM9b', bundlerConfidence: 'high',
+          metrics: { walletAddress: '${F1}' }, children: [kid('Kid1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12e6), kid('Kid2bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 13e6), kid('Kid3cccccccccccccccccccccccccccccccccccccccc', 10e6), kid('Kid4dddddddddddddddddddddddddddddddddddddddd', 10e6)] } }, return: null };
+      </script>`;
       const t = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'JEVABLE $6.97K | Trojan', body: page0, route, tw: { mode: 'live', wallets: { live: [W[0]], paper: [] } } });
       await t.wait(2500);
       const dock = () => t.page.evaluate(() => (document.querySelector('#agtw .bund') || {}).innerText || '');
       let d = await dock();
-      ok('Trojan: the bundles panel reads Trojan\'s own holders data (2 bundles, 9% held)', /BUNDLES/.test(d) && /2 bundles still hold\s*9\.0%/.test(d.replace(/\s+/g, ' ')), d.replace(/\s+/g, ' ').slice(0, 200));
-      ok('Trojan: bundle rows show funder, wallets, share held', /u6PJ…Xq2w/.test(d) && /2 wallets/.test(d) && /6\.0%/.test(d) && /dev-linked/.test(d));
+      ok('Trojan: bundles = Trojan\'s own grouping (2 bundles, 9% held; the lone 8% wallet is not one)', /BUNDLES/.test(d) && /2 bundles still hold\s*9\.0%/.test(d.replace(/\s+/g, ' ')), d.replace(/\s+/g, ' ').slice(0, 200));
+      ok('Trojan: bundle rows use Trojan\'s name + wallet count from its table, share held, flags', /GZVS\.\.\.LM9b/.test(d) && /5 wallets/.test(d) && /6\.0%/.test(d) && /dev-linked/.test(d) && /high confidence/.test(d), d.replace(/\s+/g, ' ').slice(200, 600));
       await t.page.screenshot({ path: `${OUT}/30-bundles-panel.png` });
       await t.page.click('#agtw .bund .ihd [data-a="bund"]'); await t.wait(300);
       const tabW = await t.page.evaluate(() => { const e = document.querySelector('#agtw .intel.tab.bund'); return e ? Math.round(e.getBoundingClientRect().width) : null; });
@@ -542,10 +551,10 @@ async function main() {
       ok('Trojan: the tab opens it again', await t.page.evaluate(() => !!document.querySelector('#agtw .intel.bund .ii') && document.querySelector('#agtw .intel.bund').getBoundingClientRect().width > 300));
       await t.page.click(`#agtw [data-bsel="${F1}"]`); await t.wait(300);
       d = await dock();
-      ok('Trojan: a bundle opens with funding + timeline', /FUNDING/.test(d) && /WHAT IT DID/.test(d) && /last buy/.test(d) && /Sell my bag/.test(d), d.replace(/\s+/g, ' ').slice(0, 160));
+      ok('Trojan: a bundle opens with Trojan\'s members + timeline', /TROJAN'S GROUPING/.test(d) && /Kid2…bbbb/.test(d) && /WHAT IT DID/.test(d) && /last buy/.test(d) && /Sell my bag/.test(d), d.replace(/\s+/g, ' ').slice(0, 220));
       await t.page.screenshot({ path: `${OUT}/31-bundle-detail.png` });
       await t.page.click('#agtw [data-bwatch]'); await t.wait(200);
-      ok('Trojan: watch a funder', await t.page.evaluate((f) => window.__agtw.st.bund.watch.includes(f), F1));
+      ok('Trojan: watch a bundle', await t.page.evaluate((f) => window.__agtw.st.bund.watch.includes(f), F1));
       await t.page.click('#agtw [data-bsel=""]'); await t.wait(200);
       // quick rule: sell 100% if a bundle dumps (LIVE → confirm)
       await t.page.click('#agtw [data-bq="dump"]'); await t.wait(300);
@@ -554,7 +563,7 @@ async function main() {
       const rules = await t.page.evaluate(() => window.__agtw.st.bund.rules.map((r) => ({ when: r.when, then: r.then, scope: r.scope, mode: r.mode, pct: r.pct })));
       ok('Trojan: rule armed (any bundle sells ≥ 30% in 60s on a coin I hold → sell 100%, LIVE)', rules.length === 1 && rules[0].then === 'sell' && rules[0].mode === 'live' && rules[0].scope === 'held', JSON.stringify(rules));
       t.clear();
-      bp[MINT] = mk([10e6, 15e6], [15e6, 15e6]); // F1: 60M → 25M (−58%)
+      bp[MINT] = mk(25e6, 30e6); // bundle 1: 60M → 25M (−58%)
       await t.wait(4500);
       let sells = t.posts(/\/sell$/);
       ok('Trojan: the bundle dumps → the rule sells my bag (100%, every holder, LIVE)', sells.length === 2 && sells.every((x) => x.path.includes(MINT) && x.body.percent === 100 && x.body.source === 'live'), JSON.stringify(sells.map((x) => x.body)));
@@ -562,25 +571,25 @@ async function main() {
       ok('Trojan: alert card says what happened and what the rule did', /BUNDLE/.test(al) && /sold 58%/.test(al) && /Rule: sold 100%/.test(al), al.replace(/\s+/g, ' '));
       await t.page.screenshot({ path: `${OUT}/32-bundle-rule-fired.png` });
       t.clear();
-      bp[MINT] = mk([2e6, 2e6], [15e6, 15e6]);
+      bp[MINT] = mk(4e6, 30e6);
       await t.wait(2500);
       ok('Trojan: once per coin — a second dump does not sell again', t.posts(/\/sell$/).length === 0);
       // reverse rule: buy (paper) when all bundles are out
       await t.page.evaluate(() => { const s = window.__agtw.st; s.bund.rules.push({ id: 'rev', on: true, who: 'any', when: 'allout', pct: 2, scope: 'this', then: 'buy', buySol: 0.2, mode: 'paper', cooldownMin: 5, once: true }); });
       t.clear();
-      bp[MINT] = mk([0.5e6, 0], [1e6, 0.5e6]);
+      bp[MINT] = mk(0.5e6, 1e6);
       await t.wait(3000);
       const buys = t.posts(/\/buy$/);
       ok('Trojan: reverse rule — all bundles out → buy (paper)', buys.length === 1 && buys[0].path.includes(MINT) && buys[0].body.amount === 0.2 && buys[0].body.source === 'paper', JSON.stringify(buys.map((x) => x.body)));
       // background watch: coins I hold (DABCAT) are polled with Trojan's request + headers
       await t.wait(1500);
       const bg = seen.filter((x) => x.mint === MINT2);
-      ok('Trojan: background watch replays Trojan\'s request (same auth header) for coins I hold', bg.length >= 1 && bg.every((x) => x.auth === 'tok-1'), JSON.stringify(bg.slice(0, 2)));
+      ok('Trojan: background watch replays both Trojan requests (same auth header) for coins I hold', bg.some((x) => x.kind === 'bp') && bg.some((x) => x.kind === 'pos') && bg.every((x) => x.auth === 'tok-1'), JSON.stringify(bg.slice(0, 2)));
       const feed = await t.page.evaluate(() => window.GM_getValue('tbFeed', []).map((f) => f.kind));
       ok('Trojan: the feed recorded the dump and the exit', feed.includes('sell') && feed.includes('allout'), feed.join());
       // a bundle dumps on another coin I hold (seen by the background watch) → flagged in the holdings bar
       await t.page.evaluate(() => { window.__agtw.st.bund.rules.forEach((r) => { r.on = false; }); });
-      bp[MINT2] = mk([1e6, 1e6], [1e6, 1e6]);
+      bp[MINT2] = mk(1e6, 1e6);
       await t.wait(15000);
       const bar = await t.page.evaluate(() => document.getElementById('agtwBar').innerText.replace(/\s+/g, ' '));
       ok('Trojan: the holdings bar flags a held coin whose bundle dumped (BUNDLE …)', /BUNDLE (−\d+%|OUT|EXIT)/.test(bar), bar);

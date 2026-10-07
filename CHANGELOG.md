@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.11.0
+- **Bundles now match Trojan's own grouping.** 3.10 guessed bundles from wallets sharing a first funder, which gave
+  different groups than Trojan's holders table. Trojan links bundle wallets server-side: its
+  `/v1/tokens/bundled-positions` has one row per bundle (the whole bundle's amounts, under its primary wallet), and
+  `/v1/tokens/positions` one row per wallet. A bundle is now a bundled row that isn't that wallet alone — the same
+  rows, balances, buys and sells Trojan shows.
+- While Trojan's holders table is on screen, the panel also takes Trojan's bundle name (e.g. "Beanzz"), wallet
+  count, confidence (high / medium / low) and member wallets from it.
+- Background watch replays both requests for the coins you hold. "Watch funder" is now "Watch bundle".
+
 ## 3.10.1
 - Fix: collapsing the Trojan BUNDLES panel left a wide empty box; it now folds to the thin tab (click it to reopen).
 
