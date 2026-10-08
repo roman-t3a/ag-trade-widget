@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.13.1
+- Buy Guard is faster and caches better.
+  - All transaction batches go out at once (30 per batch on a keyed RPC such as Helius, 10 on the public one).
+    A rate-limited batch is retried as a batch instead of being split into singles, which made the 429s worse.
+  - The result can be used as soon as the launch is read. The farm-wallet history (5 calls, now in parallel)
+    follows on its own and updates the score.
+  - Smarter cache: a launch's first 60 transactions never change, so a read is kept for 6 h. Only a coin under
+    30 min old with fewer than 60 transactions is read again, every 20 s and right before a buy (showing its last
+    result meanwhile).
+  - Reads are shared across Trojan tabs (last 40 coins), so a Trenches card checked in one tab is ready in the
+    coin's tab.
+  - Trenches cards: two at a time, 0.25 s apart on a keyed RPC (one at a time, 1.2 s apart on the public one).
+  - The guard view shows how long the read took.
+
 ## 3.13.0
 - **Buy Guard (Trojan).** Before a buy leaves the widget (buttons, hotkeys, Trenches ⚡, dip / DCA orders, bundle
   rules), the coin gets a 0–100 score. It reads the coin's first 60 transactions over Solana RPC and finds the creator,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.13.0
+// @version      3.13.1
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -3125,10 +3125,13 @@
     const gdLog = () => (GM_getValue('gdLog', []) || []).filter((x) => Date.now() - x.at < 2 * 86400e3);
     function gdLogAdd(e) { const l = gdLog(); l.push(Object.assign({ at: Date.now() }, e)); GM_setValue('gdLog', l.slice(-60)); }
     const gdSkip = {}; // mint → until: orders / rules skip a coin you blocked
-    // RPC: at most 3 requests at a time, retried on 429 / network errors
+    // RPC. The public mainnet endpoint is slow and rate-limited (429s): 2 requests at a time, batches of 10. A
+    // keyed RPC (Helius, QuickNode…): 4 at a time, batches of 30, so a whole launch comes back in one round trip.
+    const PUB_RPC = /api\.mainnet-beta\.solana\.com/;
+    const rpcPub = () => PUB_RPC.test(st.guard.rpc || '');
     let rpcN = 0, rpcBatch = null;
     const rpcQ = [];
-    const rpcSlot = () => new Promise((r) => { if (rpcN < 3) { rpcN++; r(); } else rpcQ.push(r); });
+    const rpcSlot = () => new Promise((r) => { if (rpcN < (rpcPub() ? 2 : 4)) { rpcN++; r(); } else rpcQ.push(r); });
     const rpcFree = () => { const n = rpcQ.shift(); if (n) n(); else rpcN--; };
     function rpcRaw(body) {
       return new Promise((res) => {
@@ -3138,37 +3141,50 @@
         } catch (_) { res({ s: 0 }); }
       });
     }
+    const retryable = (s) => s === 429 || s === 0 || s >= 500;
     async function rpc(method, params) {
       for (let i = 0; i < 4; i++) {
         await rpcSlot();
         const r = await rpcRaw({ jsonrpc: '2.0', id: 1, method, params });
         rpcFree();
         if (r.s === 200 && r.j && 'result' in r.j) return r.j.result;
-        if (r.s === 429 || r.s === 0 || r.s >= 500) { await sleep(700 * (i + 1)); continue; }
+        if (retryable(r.s)) { await sleep(500 * (i + 1)); continue; }
         return null;
       }
       return null;
     }
+    // transactions in batches, all batches in flight at once (the slots cap it); a rate-limited batch is retried as a
+    // batch (singles would only multiply the 429s); an RPC that refuses batches falls back to singles once
     async function rpcTxs(sigs) {
-      const out = new Array(sigs.length).fill(null), P = { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' };
-      for (let i = 0; i < sigs.length; i += 10) {
-        const part = sigs.slice(i, i + 10);
-        let done = false;
-        if (rpcBatch !== false) {
+      const out = new Array(sigs.length).fill(null), P = { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }, B = rpcPub() ? 10 : 30;
+      const chunk = async (i) => {
+        const part = sigs.slice(i, i + B);
+        const tries = rpcPub() ? 6 : 4; // the public RPC allows ~40 calls per method per 10 s: wait it out rather than read half a launch
+        for (let k = 0; k < tries && rpcBatch !== false; k++) {
           await rpcSlot();
-          const r = await rpcRaw(part.map((s, k) => ({ jsonrpc: '2.0', id: k, method: 'getTransaction', params: [s, P] })));
+          const r = await rpcRaw(part.map((x, n) => ({ jsonrpc: '2.0', id: n, method: 'getTransaction', params: [x, P] })));
           rpcFree();
-          if (r.s === 200 && Array.isArray(r.j)) { rpcBatch = true; for (const x of r.j) if (x && x.result && x.id >= 0 && x.id < part.length) out[i + x.id] = x.result; done = true; }
-          else if (r.s && r.s !== 429 && r.s < 500) rpcBatch = false; // this RPC doesn't take batches
+          if (r.s === 200 && Array.isArray(r.j)) {
+            rpcBatch = true;
+            const miss = [];
+            for (const x of r.j) if (x && x.id >= 0 && x.id < part.length) { if (x.result) out[i + x.id] = x.result; else if (x.error) miss.push(x.id); }
+            await Promise.all(miss.map(async (n) => { out[i + n] = await rpc('getTransaction', [part[n], P]); })); // a rate-limited item inside the batch
+            return;
+          }
+          if (!retryable(r.s)) { rpcBatch = false; break; } // this RPC doesn't take batches
+          await sleep(rpcPub() ? 1500 + Math.random() * 1000 : 500 * (k + 1));
         }
-        if (!done) await Promise.all(part.map(async (s, k) => { out[i + k] = await rpc('getTransaction', [s, P]); }));
-      }
+        await Promise.all(part.map(async (x, n) => { if (!out[i + n]) out[i + n] = await rpc('getTransaction', [x, P]); }));
+      };
+      const starts = [];
+      for (let i = 0; i < sigs.length; i += B) starts.push(i);
+      await Promise.all(starts.map(chunk));
       return out;
     }
-    async function gdBusy(ws, t0) { // farm wallets that made 1,000+ transactions in the 4 days before the launch
+    async function gdBusy(ws, t0) { // farm wallets that made 1,000+ transactions in the 4 days before the launch (in parallel)
+      const rs = await Promise.all(ws.map((w) => rpc('getSignaturesForAddress', [w, { limit: 1000 }])));
       let n = 0, of = 0;
-      for (const w of ws) {
-        const r = await rpc('getSignaturesForAddress', [w, { limit: 1000 }]);
+      for (const r of rs) {
         if (!Array.isArray(r)) continue;
         of++;
         const old = r[r.length - 1];
@@ -3176,15 +3192,45 @@
       }
       return { n, of };
     }
+    // Cache. A launch's first 60 transactions never change, so a scan that read them is good for hours. Only a coin
+    // younger than that (all of its transactions fit in the read) is read again, every 20 s and right before a buy.
+    // Results are shared across tabs (GM storage, last 40 coins), so a Trenches card checked in one tab is ready in
+    // the coin's own tab.
+    const GD_TTL = { ok: 6 * 3600e3, young: 20e3, old: 6 * 3600e3, err: 60e3 };
+    const gdYoung = (g) => !!(g && g.scan && g.scan.complete && (!g.scan.t0 || Date.now() / 1000 - g.scan.t0 < 1800)); // all its txs fit in the read, and under 30 min old
+    const gdTtl = (g) => (g.st === 'ok' ? (gdYoung(g) ? GD_TTL.young : GD_TTL.ok) : GD_TTL[g.st] || GD_TTL.err);
+    let gdSaveT = null;
+    function gdShare() { // trimmed copies of the finished scans → GM (debounced)
+      if (gdSaveT) return;
+      gdSaveT = setTimeout(() => {
+        gdSaveT = null;
+        const all = Object.assign({}, GM_getValue('gdScans', {}) || {});
+        for (const [m, g] of Object.entries(gScan)) {
+          if (g.st === 'run' || g.shared === g.at) continue;
+          g.shared = g.at;
+          all[m] = { st: g.st, at: g.at, ms: g.ms, why: g.why, lite: g.lite, busy: g.busy || null, scan: g.scan ? Object.assign({}, g.scan, { events: (g.scan.events || []).slice(0, 90) }) : null };
+        }
+        const keep = Object.entries(all).filter(([, g]) => Date.now() - g.at < gdTtl(g)).sort((a, b) => b[1].at - a[1].at).slice(0, 40);
+        GM_setValue('gdScans', Object.fromEntries(keep));
+      }, 1500);
+    }
+    function gdFromShare(mint) {
+      const x = (GM_getValue('gdScans', {}) || {})[mint];
+      if (!x || x.st === 'run' || Date.now() - x.at >= gdTtl(x)) return null;
+      const g = gScan[mint] = Object.assign({}, x, { shared: x.at });
+      g.p = Promise.resolve(g);
+      return g;
+    }
     // lite (Trenches cards): skips the farm-wallet history (5 extra calls); the coin you open gets it topped up
     function guardScan(mint, force, lite) {
-      const g = gScan[mint], now = Date.now();
+      const now = Date.now(), g = gScan[mint] || (!force && gdFromShare(mint));
       if (!force && g && !lite && g.st === 'ok' && g.lite && g.scan.farm && !g.busyP && st.guard.ck.busy !== false) {
-        g.busyP = gdBusy(g.scan.farm.wallets.slice(0, 5), g.scan.t0).then((b) => { g.busy = b; g.lite = false; delete gdCache[mint]; render(); scanCardsSoon(); });
+        g.busyP = gdBusy(g.scan.farm.wallets.slice(0, 5), g.scan.t0).then((b) => { g.busy = b; g.lite = false; g.at = Date.now(); delete gdCache[mint]; gdShare(); render(); scanCardsSoon(); });
         return g.p;
       }
-      if (!force && g && (g.st === 'run' || now - g.at < (g.st === 'err' ? 60e3 : g.st === 'old' ? 3600e3 : 10 * 60e3))) return g.p || Promise.resolve(g);
-      const o = gScan[mint] = { st: 'run', at: now, lite: !!lite };
+      if (!force && g && (g.st === 'run' || now - g.at < gdTtl(g))) return g.p || Promise.resolve(g);
+      const prev = g && g.st === 'ok' ? g : null;
+      const o = gScan[mint] = { st: 'run', at: now, lite: !!lite, prev };
       o.p = (async () => {
         try {
           let sigs = [], before = null;
@@ -3202,17 +3248,20 @@
           const scan = Core.launchScan(txs.filter(Boolean), mint);
           if (!scan.ok) { o.st = 'err'; o.why = scan.why; return o; }
           scan.total = sigs.length; scan.complete = sigs.length <= GD_TX;
-          o.scan = scan;
-          if (scan.farm && st.guard.ck.busy !== false && !lite) o.busy = await gdBusy(scan.farm.wallets.slice(0, 5), scan.t0);
-          o.st = 'ok';
+          o.scan = scan; o.st = 'ok'; o.ms = Date.now() - now; // usable now: the farm-wallet history follows on its own
+          if (scan.farm && st.guard.ck.busy !== false && !lite) {
+            const keep = prev && prev.busy && prev.scan && prev.scan.farm && prev.scan.farm.n === scan.farm.n ? prev.busy : null; // a young coin re-read: same farm, same answer
+            if (keep) o.busy = keep;
+            else o.busyP = gdBusy(scan.farm.wallets.slice(0, 5), scan.t0).then((b) => { o.busy = b; delete gdCache[mint]; gdShare(); render(); scanCardsSoon(); });
+          }
           const M = gdMem(); // a saved farm / flagged dev seen again: remember where
           let ch = false;
           const name = (heldAll[mint] || {}).sym || (mint === getMint() ? sym : '') || shortA(mint);
           for (const f of M.farms) if (scan.farm && f.wallets.filter((w) => scan.farm.wallets.includes(w)).length >= 3 && !f.coins.includes(name)) { f.coins.push(name); f.coins = f.coins.slice(-8); ch = true; }
           if (M.devs[scan.dev] && !(M.devs[scan.dev].coins || []).includes(name)) { M.devs[scan.dev].coins = (M.devs[scan.dev].coins || []).concat(name).slice(-8); ch = true; }
           if (ch) GM_setValue('gdMem', M);
-        } catch (e) { o.st = 'err'; o.why = String((e && e.message) || e); }
-        finally { o.at = Date.now(); delete gdCache[mint]; render(); scanCardsSoon(); }
+        } catch (e) { o.st = prev ? 'ok' : 'err'; o.why = String((e && e.message) || e); if (prev) Object.assign(o, { scan: prev.scan, busy: prev.busy, ms: prev.ms }); }
+        finally { o.at = Date.now(); delete o.prev; if (o.ms == null) o.ms = Date.now() - now; delete gdCache[mint]; gdShare(); render(); scanCardsSoon(); }
         return o;
       })();
       return o.p;
@@ -3227,7 +3276,7 @@
       return v;
     }
     function guardEval(mint, buySol) {
-      const g = gScan[mint], s = bsnap[mint], now = Date.now(), scan = g && g.st === 'ok' ? g.scan : null;
+      const g = gScan[mint], s = bsnap[mint], now = Date.now(), scan = g && g.st === 'ok' ? g.scan : g && g.st === 'run' && g.prev ? g.prev.scan : null;
       const rows = s && s.pos && now - (s.posAt || 0) < 120000 ? s.pos : null, sum = s && s.sum && now - (s.at || 0) < 120000 ? s.sum : null;
       const ageMin = scan && scan.t0 ? (now / 1000 - scan.t0) / 60 : null;
       const outS = scan && scan.complete ? scan.outside : rows ? Core.outsideSol(rows, scan) : null;
@@ -3240,7 +3289,7 @@
     function gdCard(mint) {
       const g = gScan[mint];
       if (!g) return null;
-      if (g.st === 'run') return { level: 'run' };
+      if (g.st === 'run' && !g.prev) return { level: 'run' };
       const c = gdCache[mint];
       if (c && Date.now() - c.at < 20000) return c.r;
       const r = guardEval(mint, Number(st.qb) || 0.1);
@@ -3252,14 +3301,15 @@
     async function guardGate({ mint, name, legs, total, mode, interactive, src }) {
       if (!gdApplies(src, mode)) return { go: true };
       if (!interactive && gdSkip[mint] > Date.now()) return { go: false, err: 'buy guard: you blocked this coin' };
-      const p = guardScan(mint);
+      const gy = gScan[mint], young = gy && gy.st === 'ok' && gdYoung(gy) && Date.now() - gy.at > 5000;
+      const p = guardScan(mint, young); // a coin younger than the read: read it again now, its farm may have just started
       const g0 = gScan[mint];
       if (g0 && g0.st === 'run') {
         if (interactive) { ui.busy = 'guard…'; render(); }
         await Promise.race([p, sleep(Math.max(0, Number(st.guard.waitMs) || 0))]);
         if (interactive) { ui.busy = ''; render(); }
       }
-      const timedOut = gScan[mint] && gScan[mint].st === 'run';
+      const timedOut = gScan[mint] && gScan[mint].st === 'run' && !gScan[mint].prev; // a young coin being re-read still has its last result
       const r = guardEval(mint, total);
       let lvl = r.level;
       if (timedOut && st.guard.timeout === 'block') lvl = 'block';
@@ -3287,12 +3337,12 @@
     }
     // prefetch: the coin on screen, and the Trenches cards in view (one at a time)
     const gdQ = [];
-    let gdBusyQ = false;
-    function gdWant(mint) { if (!GD || !st.guard.on || !st.guard.cardScan || gScan[mint] || gdQ.includes(mint)) return; gdQ.push(mint); if (gdQ.length > 40) gdQ.shift(); gdPump(); }
-    async function gdPump() {
-      if (gdBusyQ) return;
-      gdBusyQ = true;
-      try { while (gdQ.length) { const m = gdQ.pop(); if (gScan[m] || document.hidden) continue; await guardScan(m, false, true); await sleep(1200); } } finally { gdBusyQ = false; }
+    let gdBusyQ = 0;
+    function gdWant(mint) { if (!GD || !st.guard.on || !st.guard.cardScan || gScan[mint] || gdQ.includes(mint)) return; gdQ.push(mint); if (gdQ.length > 40) gdQ.shift(); gdPump(); gdPump(); }
+    async function gdPump() { // public RPC: one card at a time, 1.2 s apart · keyed RPC: two at a time, 0.25 s apart
+      if (gdBusyQ >= (rpcPub() ? 1 : 2)) return;
+      gdBusyQ++;
+      try { while (gdQ.length) { const m = gdQ.pop(); if (gScan[m] || gdFromShare(m) || document.hidden) continue; await guardScan(m, false, true); await sleep(rpcPub() ? 1200 : 250); } } finally { gdBusyQ--; }
     }
     // ---- views
     const GD_TAG = { block: ['BLOCKED', 'bad'], caution: ['CAUTION', 'mid'], clear: ['CLEAR', 'ok'] };
@@ -3322,7 +3372,7 @@
       const g = gScan[mint], amt = Number(st.qb) || 0.1, r = mint ? guardEval(mint, amt) : null, M = gdMem(), log = gdLog().slice(-8).reverse();
       const today = gdLog().filter((x) => new Date(x.at).toDateString() === new Date().toDateString()).reduce((a, x) => a + (x.kind === 'block' || x.kind === 'shrink' ? x.sol || 0 : 0), 0);
       const S = r && r.scan, devs = Object.entries(M.devs || {}).filter(([, d]) => d.flag);
-      return `<div class="sh"><button class="lk" data-a="gview">‹ Bundles</button><b>Buy Guard</b><span class="sp"></span><span class="mut sm">${!st.guard.on ? 'off' : g ? (g.st === 'run' ? 'reading the launch…' : g.st === 'ok' ? `${S.n} txs read` : escH(g.why || g.st)) : 'not read yet'}</span><button class="ib" data-a="grescan" title="Read the launch again">${ICON.refresh}</button></div>
+      return `<div class="sh"><button class="lk" data-a="gview">‹ Bundles</button><b>Buy Guard</b><span class="sp"></span><span class="mut sm">${!st.guard.on ? 'off' : g ? (g.st === 'run' ? 'reading the launch…' : g.st === 'ok' ? `${S.n} txs read in ${((g.ms || 0) / 1000).toFixed(1)} s${gdYoung(g) ? ' · young coin, re-read every 20 s' : ''}` : escH(g.why || g.st)) : 'not read yet'}</span><button class="ib" data-a="grescan" title="Read the launch again">${ICON.refresh}</button></div>
         ${!mint ? '<div class="mut sm">Open a coin to check it.</div>' : guardSheetHtml(r, { why: ui.gwhy })}
         <span class="mut sm">Scored for a ◎ ${sol(amt)} buy (your card ⚡ amount). Each real buy is scored at its own size.</span>
         ${S ? `<div class="g2">${S.farm ? `<button class="btn" data-gmem="farm">Remember this farm</button>` : '<span></span>'}<button class="btn" data-gmem="dev">${(M.devs[S.dev] || {}).flag ? 'Unflag this dev' : 'Flag this dev everywhere'}</button></div>` : ''}

@@ -461,7 +461,7 @@ async function main() {
       for (const w of cat.farm.slice(0, 5)) busy[w] = cat.txs[0].blockTime - 3 * 86400;
       const rpc = { sigs, txs, busy };
       const t = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'cat $3.24K | Trojan', rpc, tw: { mode: 'live', wallets: { live: [W[0]], paper: [] }, confirmAbove: 5, safety: { dupSec: 0 } } });
-      await t.page.evaluate((m) => window.__agtw.guardScan(m), MINT);
+      await t.page.evaluate((m) => window.__agtw.guardScan(m), MINT); await t.wait(300); // the farm-wallet history comes right after
       const g = await t.page.evaluate((m) => { const x = window.__agtw.gScan[m]; return { st: x.st, n: x.scan && x.scan.farm && x.scan.farm.n, busy: x.busy }; }, MINT);
       ok('Guard: reads the launch over RPC (29-wallet farm, 5/5 busy wallets)', g.st === 'ok' && g.n === 29 && g.busy && g.busy.n === 5, JSON.stringify(g));
       t.clear();
@@ -525,6 +525,9 @@ async function main() {
       // panel: the guard view, memory
       await t.click('[data-a="gview"]'); await t.wait(300);
       let pv = await t.page.evaluate(() => (document.querySelector('#agtw .bund') || {}).innerText || '');
+      ok('Guard: the view says how long the read took', /txs read in \d+\.\d s/.test(pv), (pv.match(/.{0,20}txs read.{0,40}/) || [''])[0]);
+      const shared = await t.gm('gdScans');
+      ok('Guard: finished reads are shared with the other Trojan tabs (trimmed)', shared && shared[MINT] && shared[MINT].st === 'ok' && shared[MINT].scan.farm.n === 29 && shared[MINT].busy && shared[MINT].busy.n === 5, Object.keys(shared || {}).join(','));
       ok('Guard: the bundles panel has a Buy Guard view (score, checks, log)', /Buy Guard/.test(pv) && /BLOCKED/.test(pv) && /Guard log/.test(pv) && /cancelled/.test(pv), pv.replace(/\s+/g, ' ').slice(0, 300));
       await t.shot('42-guard-panel');
       await t.click('[data-gmem="farm"]'); await t.wait(200);
@@ -562,6 +565,13 @@ async function main() {
       await t.page.click(`a[href="/terminal?token=${MINT}&chain=sol"] .agtw-c .qb`); await t.wait(500);
       ok('Guard cards: ⚡ on a blocked card opens the guard, nothing sent', /BLOCKED/.test((await t.modal()) || '') && !t.posts(/\/buy$/).length);
       ok('no page errors (guard cards)', !t.errs.length, t.errs.join(' | '));
+      const shared = await t.gm('gdScans');
+      const t2 = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'cat $3.24K | Trojan', rpc: { sigs, txs }, gm: { gdScans: shared }, tw: { mode: 'live', wallets: { live: [W[0]] } } });
+      await t2.wait(3600);
+      const c2 = await t2.page.evaluate(() => window.__rpcCalls.slice());
+      const gs = await t2.page.evaluate((m) => { const g = window.__agtw.gScan[m]; return g && { st: g.st, n: g.scan && g.scan.farm && g.scan.farm.n }; }, MINT);
+      ok('Guard cache: another tab reuses the read (no getTransaction), only the farm history is topped up', gs && gs.st === 'ok' && gs.n === 29 && !c2.includes('getTransaction'), JSON.stringify({ gs, c2 }));
+      await t2.page.close();
       await t.page.close();
     }
     // ---------------------------------------------------------------- 10c · Axiom: Pulse cards + token page (mint read from the page)
