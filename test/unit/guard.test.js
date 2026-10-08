@@ -123,3 +123,43 @@ test('outsideSol: Trojan rows minus dev, farm and pool', () => {
   assert.equal(C.outsideSol(rows, s), 1.75);
   assert.equal(C.outsideSol(rows, null), 12.75);
 });
+
+test('Block-0 bundle with the dev\'s tool + dev dump (the Pao launch)', () => {
+  const f = F.pao(MINT), s = C.launchScan(f.txs, MINT);
+  assert.equal(s.farm, null, 'only 3 wallets: no farm');
+  assert.equal(s.b0.toolN, 3);
+  assert.ok(Math.abs(s.b0.toolPct - 12.873) < 0.01, String(s.b0.toolPct));
+  assert.equal(s.b0.devShape, true, 'they share the dev\'s transaction shape');
+  assert.deepEqual(s.b0.wallets.sort(), f.b0.slice().sort());
+  assert.ok(!s.b0.wallets.includes(f.sniper), 'a router sniper is not part of the bundle');
+  assert.equal(s.devLastSell, 35);
+  assert.deepEqual([...new Set(s.events.filter((e) => e.lane === 'b0').map((e) => e.w))].sort(), f.b0.slice().sort());
+  const r = C.guardScore({ scan: s, buySol: 0.1, ageMin: 1, bundlersPct: 50.5, bundlersSrc: 'Trojan' }, {});
+  assert.equal(r.level, 'block');
+  assert.equal(r.head, 'Bundled launch, dev dumped');
+  assert.deepEqual(r.checks.filter((x) => x.tag === 'FAIL').map((x) => x.id).sort(), ['block0', 'bundled', 'devstep']);
+  assert.match(r.checks.find((x) => x.id === 'devstep').detail, /sold all of its 12%/);
+  assert.equal(C.guardScore({ scan: s }, {}).level, 'block', 'block-0 + dump alone block (60)');
+});
+
+test('block-0 rules: a lone dev-tool buy warns; a slot-0 sniper with its own shape is nothing', () => {
+  const L = F.launch(MINT), dev = F.addr('d1'), pool = F.addr('p1'), b = F.addr('b1'), x = F.addr('x1');
+  L.tx({ rel: 0, w: dev, d: { [dev]: 50e6, [pool]: 950e6 }, sol: 1, fee: 1005000, ver: 0, logs: ['Program log: Instruction: Create'] });
+  L.tx({ rel: 0, w: b, d: { [b]: 40e6, [pool]: -40e6 }, sol: 1, fee: 1005000, ver: 0 });
+  L.tx({ rel: 0, w: x, d: { [x]: 30e6, [pool]: -30e6 }, sol: 1, fee: 3749000, ver: 0, progs: ['5DVzy5EpG2xVxrwwuyZPDe9EpraUnGh7ZgYABwizzNVu'] });
+  const s = C.launchScan(L.txs, MINT);
+  assert.equal(s.b0.toolN, 1);
+  assert.equal(C.guardScore({ scan: s }, {}).checks.find((c) => c.id === 'block0').tag, 'WARN');
+  assert.equal(C.launchScan(F.cat(MINT).txs, MINT).b0.toolN, 0, 'cat: the slot-0 sniper is a third party');
+});
+
+test('bundles held and funded-together checks', () => {
+  assert.equal(C.guardScore({ bundlersPct: 50 }, {}).checks.find((c) => c.id === 'bundled').tag, 'FAIL');
+  assert.equal(C.guardScore({ bundlersPct: 20 }, {}).checks.find((c) => c.id === 'bundled').tag, 'WARN');
+  assert.equal(C.guardScore({ bundlersPct: 10 }, {}).checks.find((c) => c.id === 'bundled'), undefined);
+  const rows = Array.from({ length: 10 }, (_, i) => ({ walletAddress: 'W' + i, currentTokenBalance: 21e6, amountNativeSpent: 1, fundingInfo: { firstNativeFunderAddress: '5tzFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxuAi9', firstNativeFundingAmount: 5.643959 } }));
+  const f = C.guardScore({ rows }, {}).checks.find((c) => c.id === 'funder');
+  assert.equal(f.tag, 'FAIL');
+  assert.equal(f.name, 'Funded together');
+  assert.match(f.detail, /10 top holders .* the same 5\.644 ◎ each · 21% of supply/);
+});

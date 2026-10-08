@@ -1,6 +1,6 @@
 {
   "name": "ag-trade-widget",
-  "version": "3.14.0",
+  "version": "3.15.0",
   "private": true,
   "description": "Tampermonkey userscripts (AG Trade Widget + AG Intel): GMGN/Axiom-style buy/sell widget that trades through Alpha Gardeners wallets, on GMGN, Trojan and Axiom",
   "scripts": {

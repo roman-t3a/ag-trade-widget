@@ -64,4 +64,15 @@ function terminal(mint) {
   for (let i = 0; i < 12; i++) { const w = addr('tbuyer' + i); L.tx({ rel: 1 + i * 4, w, d: { [w]: 2e6, [pool]: -2e6 }, sol: 0.1, fee: 1005000, progs: [CB, GMGN] }); }
   return { txs: L.txs, dev, pool };
 }
-module.exports = { addr, launch, cat, clean, terminal, PUMP, GMGN, JITO };
+// pao(): a Block-0 bundle — the dev creates (12.5%) and 3 wallets buy 12.9% in the SAME slot with the dev's tool
+// (v0 · 0.001005 ◎), one outside sniper with a router, then the dev sells everything with that same shape by slot +35
+function pao(mint) {
+  const L = launch(mint), dev = addr('2bBRdev'), pool = addr('5d3Upool'), b = [addr('DuKtb0'), addr('68aib0'), addr('HZsXb0')], sn = addr('5fgpsn');
+  L.tx({ rel: 0, w: dev, d: { [dev]: 124.86e6, [pool]: 875.14e6 }, sol: 4.05, fee: 1010000, ver: 0, progs: [CB, PUMP], logs: ['Program log: Instruction: CreateV2'] });
+  [[0, 44.68], [1, 42.94], [2, 41.11]].forEach(([i, m]) => L.tx({ rel: 0, w: b[i], d: { [b[i]]: m * 1e6, [pool]: -m * 1e6 }, sol: 1.8, fee: 1005000, ver: 0, progs: [CB, PUMP] }));
+  L.tx({ rel: 0, w: sn, d: { [sn]: 6.13e6, [pool]: -6.13e6 }, sol: 0.3, fee: 302846, ver: 0, progs: [CB, 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'] });
+  for (let i = 0; i < 6; i++) { const w = addr('paoout' + i); L.tx({ rel: 2 + i * 3, w, d: { [w]: 0.5e6, [pool]: -0.5e6 }, sol: 0.03, fee: 6000 + i * 9000, progs: [CB, PUMP] }); }
+  [[8, 62.43], [12, 31.21], [35, 31.22]].forEach(([rel, m]) => L.tx({ rel, w: dev, d: { [dev]: -m * 1e6, [pool]: m * 1e6 }, sol: -2, fee: 1005000, ver: 0, progs: [CB, PUMP] }));
+  return { txs: L.txs, dev, pool, b0: b, sniper: sn };
+}
+module.exports = { addr, launch, cat, clean, terminal, pao, PUMP, GMGN, JITO };

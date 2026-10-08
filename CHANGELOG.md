@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.15.0
+- Buy Guard catches **block-0 bundles**. A coin like Pao was rated Clear: the dev's own tool bought 13% with 3 wallets
+  in the creation block (same transaction shape as the dev), then the dev sold everything by slot +35, but there
+  were too few wallets to count as a "farm".
+  - New check **Block-0 bundle**: 2+ wallets buying in the creation block with the dev's transaction shape (or one
+    shared shape with no terminal router), ≥ 3% of supply → FAIL 30. A single dev-tool buy → WARN.
+  - **Dev dumped**: the dev sold ≥ 80% of its buy → FAIL 30 (was a 15-point warning without a farm).
+  - **Bundles hold a lot**: bundle wallets hold ≥ 30% of supply → FAIL 25 (≥ 15% → WARN). Uses Trojan's own
+    "Bundlers %" from the coin bar, else the bundles panel.
+  - **Funded together**: 5+ top holders with one funder holding ≥ 10% → FAIL 20 (was always a 6-point warning).
+  - Pao now scores 85 (Bundled launch, dev dumped). cat still scores the same.
+  - "Launch not read" on brand-new coins: signatures are read at "confirmed" (a seconds-old launch isn't
+    finalized yet, so its creation was missing), and a coin whose creation wasn't listed is read again after 4 s.
+  - The "Why?" view has a Block 0 lane for the dev's tool wallets.
+
 ## 3.14.0
 - **Show all** on terminal lists (GMGN, Trojan, Axiom): one toggle in the footbar (or press H, or ⚙ → AG filter) and
   no coin is hidden or dimmed any more, whatever hides it: the AG filter, the Buy Guard, or your own hidden list.

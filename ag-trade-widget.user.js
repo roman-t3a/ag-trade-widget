@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.14.0
+// @version      3.15.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -637,11 +637,22 @@
       const devShares = !!farm && devSells.some((e) => e.print === farm.print);
       const snip = trades.filter((e) => rel(e) === 0 && e.side === 'buy' && e.w !== dev && !fs.has(e.w));
       const outside = trades.filter((e) => e.side === 'buy' && e.w !== dev && !fs.has(e.w)).reduce((a, e) => a + Math.max(0, e.sol), 0);
-      const lane = (e) => (e.w === dev ? 'dev' : fs.has(e.w) ? 'farm' : snip.some((x) => x.w === e.w) ? 'sniper' : 'out');
+      const lane = (e) => (e.w === dev ? 'dev' : fs.has(e.w) ? 'farm' : toolWs.has(e.w) ? 'b0' : snip.some((x) => x.w === e.w) ? 'sniper' : 'out');
+      // block-0 bundle (Proxima's "Front MEV"): wallets buying in the creation block (or the next) with the DEV's own
+      // transaction shape, or 2+ of them sharing one shape with no terminal router
+      const devPrints = new Set([c.print].concat(devEv.map((e) => e.print)));
+      const early = trades.filter((e) => rel(e) <= 1 && e.side === 'buy' && e.w !== dev);
+      const byP = {};
+      for (const e of early) (byP[e.print] = byP[e.print] || { print: e.print, routers: e.routers, ws: new Set(), tok: 0 }).ws.add(e.w), byP[e.print].tok += e.tok;
+      const tool = Object.values(byP).filter((g) => devPrints.has(g.print) || (g.ws.size >= 2 && !g.routers.length)).sort((a, b) => b.tok - a.tok);
+      const toolWs = new Set([].concat(...tool.map((g) => [...g.ws])));
+      const b0 = { n: new Set(early.map((e) => e.w)).size, pct: (early.reduce((a, e) => a + e.tok, 0) / supply) * 100, toolN: toolWs.size, toolPct: (tool.reduce((a, g) => a + g.tok, 0) / supply) * 100,
+        devShape: tool.some((g) => devPrints.has(g.print)), text: tool[0] ? printText(tool[0].print) : '', wallets: [...toolWs] };
+      const lastSell = devSells.length ? rel(devSells[devSells.length - 1]) : null;
       return {
         ok: true, mint, s0, t0: c.t, dev, pool: c.pool, supply, n: ev.length,
         devBuyPct: (devIn / supply) * 100, devLeftPct: (Math.max(0, devIn - devOut) / supply) * 100,
-        devSells: devSells.map((e) => ({ rel: rel(e), tok: -e.tok, print: e.print })), devShares, devInto, farm,
+        devSells: devSells.map((e) => ({ rel: rel(e), tok: -e.tok, print: e.print })), devShares, devInto, farm, b0, devLastSell: lastSell,
         prints: prints.slice(0, 6).map((p) => ({ print: p.print, text: printText(p.print), n: p.n, buys: p.buys, sells: p.sells, dev: p.dev })),
         snipers: snip.map((e) => ({ w: e.w, tok: e.tok, sol: e.sol })), outside,
         events: [{ rel: 0, w: dev, side: 'buy', tok: c.tok, lane: 'dev' }].concat(trades.map((e) => ({ rel: rel(e), w: e.w, side: e.side, tok: Math.abs(e.tok), lane: lane(e) }))),
@@ -658,9 +669,9 @@
       const L = (lines || [1, 2, 5, 10]).map(Number).filter((x) => x > 0).sort((a, b) => a - b), o = Math.max(0, num(outside) || 0), b = Math.max(0, num(buy) || 0);
       return { outside: o, buy: b, lines: L, line: L.find((l) => o < l && o + b >= l) || null, max: Math.max(L[L.length - 1] || 10, o + b) };
     }
-    const GUARD_W = { farm: 35, devstep: 30, busy: 15, seen: 20, flagged: 25, nuke: 10, out: 6, funder: 6, devrec: 8 };
-    const GUARD_ON = { farm: true, devstep: true, busy: true, seen: true, flagged: true, nuke: true, out: true, funder: true, devrec: false };
-    // inp: { scan, sum (bundleSummary), rows (Trojan wallet rows), buySol, ageMin, outsideSol, busy {n, of}, mem {farms:[{wallets, coins}], devs:{addr:{flag}}}, migr {m, n} }
+    const GUARD_W = { block0: 30, farm: 35, devstep: 30, bundled: 25, busy: 15, seen: 20, flagged: 25, nuke: 10, out: 6, funder: 20, devrec: 8 };
+    const GUARD_ON = { block0: true, farm: true, devstep: true, bundled: true, busy: true, seen: true, flagged: true, nuke: true, out: true, funder: true, devrec: false };
+    // inp: { scan, sum (bundleSummary), bundlersPct (bundles' share held now), rows (Trojan wallet rows), buySol, ageMin, outsideSol, busy {n, of}, mem {farms:[{wallets, coins}], devs:{addr:{flag}}}, migr {m, n} }
     // cfg: { w, on, lines, nukeMin, caution, block } → { score, level clear|caution|block, checks:[{id, tag FAIL|WARN|INFO, name, detail, pts}], nuke, head }
     function guardScore(inp, cfg) {
       inp = inp || {}; cfg = cfg || {};
@@ -671,10 +682,17 @@
         const strong = S.devShares || !F.routers.length;
         add('farm', strong ? 'FAIL' : 'WARN', 'Farm stream', `${F.n} wallets bought ${F.buys}× between slot +${F.first} and +${F.last}, one transaction shape (${F.text})${strong ? '' : ' · may be a terminal default'}`, strong ? W.farm : W.farm / 2);
       }
+      const B0 = S && S.b0;
+      if (B0 && B0.toolN >= 2 && B0.toolPct >= 3) add('block0', 'FAIL', 'Block-0 bundle', `${B0.toolN} wallets bought ${pct(B0.toolPct)} in the creation block with ${B0.devShape ? 'the dev\'s own' : 'one'} transaction shape (${B0.text})`, W.block0);
+      else if (B0 && B0.toolN >= 1 && B0.devShape && B0.toolPct >= 2) add('block0', 'WARN', 'Block-0 buy with the dev\'s tool', `${B0.toolN} wallet bought ${pct(B0.toolPct)} in the creation block with the dev's transaction shape`, W.block0 / 2);
       if (S && S.devSells.length) {
+        const sold = S.devBuyPct - S.devLeftPct, fast = S.devLastSell != null ? ` by slot +${S.devLastSell}` : '';
         if (F && (S.devInto >= 2 || S.devShares)) add('devstep', 'FAIL', 'Dev sells into it', `${S.devSells.length} dev sells while the farm bought, ${pct(S.devBuyPct)} → ${pct(S.devLeftPct)}${S.devShares ? ', same shape as the farm' : ''}`, W.devstep);
-        else if (S.devBuyPct >= 5 && S.devLeftPct < S.devBuyPct / 2) add('devstep', 'WARN', 'Dev selling', `dev sold ${pct(S.devBuyPct - S.devLeftPct)} of its ${pct(S.devBuyPct)} in ${S.devSells.length} sells`, W.devstep / 2);
+        else if (S.devBuyPct >= 3 && sold >= S.devBuyPct * 0.8) add('devstep', 'FAIL', 'Dev dumped', `the dev sold ${sold >= S.devBuyPct * 0.99 ? 'all of its ' + pct(S.devBuyPct) : pct(sold) + ' of its ' + pct(S.devBuyPct)}${fast} (${S.devSells.length} sells)${B0 && B0.devShape ? ' while its block-0 wallets held' : ''}`, W.devstep);
+        else if (S.devBuyPct >= 3 && sold >= S.devBuyPct / 2) add('devstep', 'WARN', 'Dev selling', `dev sold ${pct(sold)} of its ${pct(S.devBuyPct)} in ${S.devSells.length} sells`, W.devstep / 2);
       }
+      const BP = inp.bundlersPct;
+      if (BP != null && BP >= 15) add('bundled', BP >= 30 ? 'FAIL' : 'WARN', 'Bundles hold a lot', `bundle wallets still hold ${pct(BP)} of supply${inp.bundlersSrc ? ' (' + inp.bundlersSrc + ')' : ''}`, BP >= 30 ? W.bundled : W.bundled / 2);
       const B = inp.busy;
       if (B && B.of) {
         if (B.n >= 3 || (B.n >= 2 && B.n === B.of)) add('busy', 'FAIL', 'Reused farm wallets', `${B.n} of ${B.of} farm wallets checked made 1,000+ transactions in the 4 days before`, W.busy);
@@ -698,7 +716,10 @@
       if (Su && Su.peak >= 5 && Su.held < 1) add('out', 'WARN', 'Bundles already out', `bundles bought ${pct(Su.peak)} and hold ${pct(Su.held)}`, W.out);
       if (inp.rows) {
         const g = clusterize(inp.rows.filter((r) => !isPoolRow(r)).slice(0, 30)).filter((x) => !x.hot)[0];
-        if (g) add('funder', 'WARN', 'Shared funder', `${g.n} top holders funded by ${g.id.slice(0, 4)}…${g.id.slice(-4)}${g.fundAmt ? ', ' + g.fundAmt + ' ◎ each' : ''} · ${pct(g.pct)} of supply`, W.funder);
+        if (g) {
+          const big = g.n >= 5 && g.pct >= 10, d = `${g.n} top holders funded by ${g.id.slice(0, 4)}…${g.id.slice(-4)}${g.fundAmt ? `, ${g.sameAmt ? 'the same ' : ''}${+Number(g.fundAmt).toFixed(3)} ◎ each` : ''} · ${pct(g.pct)} of supply`;
+          add('funder', big ? 'FAIL' : 'WARN', big ? 'Funded together' : 'Shared funder', d, big ? W.funder : W.funder * 0.3);
+        }
       }
       const R = inp.migr;
       if (R && R.n > 0) {
@@ -709,9 +730,11 @@
       const score = Math.min(100, out.reduce((a, x) => a + x.pts, 0)), cau = num(cfg.caution) || 30, blk = num(cfg.block) || 60;
       const level = score >= blk ? 'block' : score >= cau ? 'caution' : 'clear';
       const has = (id, tag) => out.some((x) => x.id === id && (!tag || x.tag === tag));
-      const head = has('farm', 'FAIL') && has('devstep', 'FAIL') ? 'Launch-tool dump pattern' : has('farm', 'FAIL') ? 'Farm wallets are buying it' : has('seen') ? 'A farm you saved is here'
+      const head = has('farm', 'FAIL') && has('devstep', 'FAIL') ? 'Launch-tool dump pattern' : has('block0', 'FAIL') && has('devstep', 'FAIL') ? 'Bundled launch, dev dumped'
+        : has('block0', 'FAIL') ? 'Bundled in the creation block' : has('farm', 'FAIL') ? 'Farm wallets are buying it' : has('seen') ? 'A farm you saved is here'
         : has('flagged') ? 'A dev you flagged' : has('devstep') ? 'The dev is selling' : has('nuke') ? 'Your buy may trigger a dump' : level === 'clear' ? 'Nothing found' : (out.find((x) => x.pts) || { name: 'Caution' }).name;
-      const sub = has('farm', 'FAIL') && has('devstep', 'FAIL') ? `One tool bought from ${F.n} wallets while it sold the dev's ${pct(S.devBuyPct)}.` : level === 'clear' ? 'No launch-tool pattern in what was read.' : '';
+      const sub = has('farm', 'FAIL') && has('devstep', 'FAIL') ? `One tool bought from ${F.n} wallets while it sold the dev's ${pct(S.devBuyPct)}.`
+        : has('block0', 'FAIL') && has('devstep', 'FAIL') ? `The dev's tool bought ${pct(B0.toolPct)} with ${B0.toolN} wallets at creation, then the dev sold its ${pct(S.devBuyPct)}.` : level === 'clear' ? 'No launch-tool pattern in what was read.' : '';
       return { score, level, checks: out.sort((a, b) => b.pts - a.pts), nuke: nk, head, sub };
     }
     const siteFor = (hostname) => SITES.find((x) => x.host.test(String(hostname || ''))) || null;
@@ -3203,7 +3226,7 @@
     // the coin's own tab.
     const GD_TTL = { ok: 6 * 3600e3, young: 20e3, old: 6 * 3600e3, err: 60e3 };
     const gdYoung = (g) => !!(g && g.scan && g.scan.complete && (!g.scan.t0 || Date.now() / 1000 - g.scan.t0 < 1800)); // all its txs fit in the read, and under 30 min old
-    const gdTtl = (g) => (g.st === 'ok' ? (gdYoung(g) ? GD_TTL.young : GD_TTL.ok) : GD_TTL[g.st] || GD_TTL.err);
+    const gdTtl = (g) => (g.st === 'ok' ? (gdYoung(g) ? GD_TTL.young : GD_TTL.ok) : g.st === 'err' && g.retry ? 4000 : GD_TTL[g.st] || GD_TTL.err);
     let gdSaveT = null;
     function gdShare() { // trimmed copies of the finished scans → GM (debounced)
       if (gdSaveT) return;
@@ -3213,7 +3236,7 @@
         for (const [m, g] of Object.entries(gScan)) {
           if (g.st === 'run' || g.shared === g.at) continue;
           g.shared = g.at;
-          all[m] = { st: g.st, at: g.at, ms: g.ms, why: g.why, lite: g.lite, busy: g.busy || null, scan: g.scan ? Object.assign({}, g.scan, { events: (g.scan.events || []).slice(0, 90) }) : null };
+          all[m] = { st: g.st, at: g.at, ms: g.ms, why: g.why, retry: g.retry, lite: g.lite, busy: g.busy || null, scan: g.scan ? Object.assign({}, g.scan, { events: (g.scan.events || []).slice(0, 90) }) : null };
         }
         const keep = Object.entries(all).filter(([, g]) => Date.now() - g.at < gdTtl(g)).sort((a, b) => b[1].at - a[1].at).slice(0, 40);
         GM_setValue('gdScans', Object.fromEntries(keep));
@@ -3240,7 +3263,7 @@
         try {
           let sigs = [], before = null;
           for (let pg = 0; ; pg++) {
-            const r = await rpc('getSignaturesForAddress', [mint, Object.assign({ limit: 1000 }, before ? { before } : {})]);
+            const r = await rpc('getSignaturesForAddress', [mint, Object.assign({ limit: 1000, commitment: 'confirmed' }, before ? { before } : {})]); // confirmed: a seconds-old launch isn't finalized yet
             if (!Array.isArray(r)) throw new Error('RPC did not answer (check the RPC address in ⚙ → Buy Guard)');
             sigs = sigs.concat(r);
             if (r.length < 1000) break;
@@ -3251,7 +3274,7 @@
           const txs = await rpcTxs(first.map((x) => x.signature));
           txs.forEach((t, k) => { if (t && t.slot == null) t.slot = first[k].slot; });
           const scan = Core.launchScan(txs.filter(Boolean), mint);
-          if (!scan.ok) { o.st = 'err'; o.why = scan.why; return o; }
+          if (!scan.ok) { o.st = 'err'; o.why = scan.why; o.retry = sigs.length < 1000; return o; } // a brand-new coin: its creation may not be listed yet
           scan.total = sigs.length; scan.complete = sigs.length <= GD_TX;
           o.scan = scan; o.st = 'ok'; o.ms = Date.now() - now; // usable now: the farm-wallet history follows on its own
           if (scan.farm && st.guard.ck.busy !== false && !lite) {
@@ -3272,11 +3295,16 @@
       return o.p;
     }
     let migr = { at: 0, mint: null, v: null };
-    function readMigr() { // Trojan's Security Audit: "Dev Migrations 21/33" (page text: read at most every 10s)
+    function readAudit() { // Trojan's coin bar: "Bundlers 50.54%" (held now) · "Dev Migrations 21/33" (page text, read at most every 5s)
       const mint = getMint();
-      if (migr.mint === mint && Date.now() - migr.at < 10000) return migr.v;
-      let v = null;
-      try { const m = (document.body.innerText || '').match(/Dev Migrations\s*(\d+)\s*\/\s*(\d+)/); v = m ? { m: Number(m[1]), n: Number(m[2]) } : null; } catch (_) {}
+      if (migr.mint === mint && Date.now() - migr.at < 5000) return migr.v;
+      const v = {};
+      try {
+        const t = document.body.innerText || '', m = t.match(/Dev Migrations\s*([\d.]+)\s*([KM]?)\s*\/\s*([\d.]+)\s*([KM]?)/), b = t.match(/Bundlers\s*([\d.]+)\s*%/);
+        const k = (x, u) => Number(x) * (u === 'K' ? 1e3 : u === 'M' ? 1e6 : 1);
+        if (m) v.migr = { m: k(m[1], m[2]), n: k(m[3], m[4]) };
+        if (b) v.bundlers = Number(b[1]);
+      } catch (_) {}
       migr = { at: Date.now(), mint, v };
       return v;
     }
@@ -3285,7 +3313,9 @@
       const rows = s && s.pos && now - (s.posAt || 0) < 120000 ? s.pos : null, sum = s && s.sum && now - (s.at || 0) < 120000 ? s.sum : null;
       const ageMin = scan && scan.t0 ? (now / 1000 - scan.t0) / 60 : null;
       const outS = scan && scan.complete ? scan.outside : rows ? Core.outsideSol(rows, scan) : null;
-      const r = Core.guardScore({ scan, rows, sum, buySol, ageMin, outsideSol: outS, busy: g && g.busy, mem: gdMem(), migr: mint === getMint() ? readMigr() : null,
+      const au = mint === getMint() ? readAudit() : {};
+      const bp = au.bundlers != null ? au.bundlers : sum && sum.clusters ? sum.held : null; // Trojan's own "Bundlers %" first, else our bundles panel
+      const r = Core.guardScore({ scan, rows, sum, buySol, ageMin, outsideSol: outS, busy: g && g.busy, mem: gdMem(), migr: au.migr || null, bundlersPct: bp, bundlersSrc: au.bundlers != null ? 'Trojan' : 'bundles panel',
         scanWhy: !g ? 'not read yet' : g.st === 'run' ? 'still reading the launch…' : g.why }, gdCfg());
       r.scan = scan; r.g = g;
       return r;
@@ -3353,7 +3383,7 @@
     const GD_TAG = { block: ['BLOCKED', 'bad'], caution: ['CAUTION', 'mid'], clear: ['CLEAR', 'ok'] };
     function gdLanes(S) {
       const max = Math.max(10, S.lastRel || 0), X = (r) => ((r / max) * 100).toFixed(1) + '%';
-      const L = [['dev', 'Dev', shortA(S.dev), '#F59AA6'], ['farm', 'Farm', S.farm ? S.farm.n + ' wallets' : 'none', '#D2C5FF'], ['sniper', 'Slot 0', S.snipers.length + ' sniper' + (S.snipers.length === 1 ? '' : 's'), '#FFE08A'], ['out', 'Outside', 'other buyers', '#8B919C']];
+      const L = [['dev', 'Dev', shortA(S.dev), '#F59AA6'], ['farm', 'Farm', S.farm ? S.farm.n + ' wallets' : 'none', '#D2C5FF'], ...(S.b0 && S.b0.toolN ? [['b0', 'Block 0', S.b0.toolN + ' with the dev\'s tool', '#F2B84B']] : []), ['sniper', 'Slot 0', S.snipers.length + ' other sniper' + (S.snipers.length === 1 ? '' : 's'), '#FFE08A'], ['out', 'Outside', 'other buyers', '#8B919C']];
       const dot = (e, col) => { const px = Math.max(6, Math.min(20, Math.sqrt(e.tok / 1e6) * 2.2)).toFixed(0); return `<i style="left:${X(e.rel)};top:${e.side === 'sell' ? 30 : 12}px;width:${px}px;height:${px}px;${e.side === 'sell' ? `border:1.5px solid ${col}` : `background:${col}`}"></i>`; };
       const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * max));
       return `<div class="gln"><div class="gtk n">${ticks.map((t) => `<span style="left:${X(t)}">${t ? '+' + t : 'create'}</span>`).join('')}</div>
@@ -4132,7 +4162,7 @@
 
     function guardSetHtml(f, ck) {
       const G = st.guard, seg = (attr, cur, list) => `<span class="seg">${list.map(([k, l]) => `<button class="${cur === k ? 'on' : ''}" data-${attr}="${k}">${l}</button>`).join('')}</span>`;
-      const NM = { farm: 'Farm stream', devstep: 'Dev sells into buyers', busy: 'Reused farm wallets', seen: 'Farm you saved', flagged: 'Dev you flagged', nuke: 'Nuke risk (first 10 min)', out: 'Bundles already out', funder: 'Shared funder', devrec: 'Dev record (< 10% migrated)' };
+      const NM = { block0: 'Block-0 bundle (dev\'s tool)', bundled: 'Bundles hold ≥ 15–30%', farm: 'Farm stream', devstep: 'Dev sells into buyers / dumps', busy: 'Reused farm wallets', seen: 'Farm you saved', flagged: 'Dev you flagged', nuke: 'Nuke risk (first 10 min)', out: 'Bundles already out', funder: 'Shared funder', devrec: 'Dev record (< 10% migrated)' };
       return `<span class="sm2">Buy Guard <span class="mut sm">(Trojan · checks a coin before a buy)</span></span>
         <div class="eg two">${ck('guard.on', 'Buy Guard on', G.on)}${ck('guard.paper', 'Guard PAPER buys too', G.paper)}
           ${ck('guard.manual', 'Buttons, hotkeys, cards ⚡', G.manual)}${ck('guard.rules', 'Dip / DCA orders, bundle rules', G.rules)}</div>

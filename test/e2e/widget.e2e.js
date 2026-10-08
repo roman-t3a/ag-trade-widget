@@ -87,7 +87,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
     window.__rpcData = rpc; window.__rpcCalls = [];
     window.__rpc = (b) => {
       const D = window.__rpcData || {}, one = (q) => {
-        window.__rpcCalls.push(q.method);
+        window.__rpcCalls.push(q.method); if (q.method === 'getSignaturesForAddress' && !window.__rpcLast) window.__rpcLast = q.params;
         if (q.method === 'getSignaturesForAddress') {
           const [a, o] = q.params;
           if (D.busy && D.busy[a]) return { jsonrpc: '2.0', id: q.id, result: Array.from({ length: 1000 }, (_, i) => ({ signature: 'b' + i, slot: 1, err: null, blockTime: D.busy[a] + i })) };
@@ -572,6 +572,26 @@ async function main() {
       const gs = await t2.page.evaluate((m) => { const g = window.__agtw.gScan[m]; return g && { st: g.st, n: g.scan && g.scan.farm && g.scan.farm.n }; }, MINT);
       ok('Guard cache: another tab reuses the read (no getTransaction), only the farm history is topped up', gs && gs.st === 'ok' && gs.n === 29 && !c2.includes('getTransaction'), JSON.stringify({ gs, c2 }));
       await t2.page.close();
+      await t.page.close();
+    }
+
+    // ---------------------------------------------------------------- 10h · Buy Guard: a block-0 bundle + dev dump, Trojan's own "Bundlers %"
+    {
+      const L = require('../fixtures/launch.js');
+      const f = L.pao(MINT), sigs = { [MINT]: f.txs.map((q) => ({ signature: q.transaction.signatures[0], slot: q.slot, err: null, blockTime: q.blockTime })).reverse() }, txs = {};
+      for (const q of f.txs) txs[q.transaction.signatures[0]] = q;
+      const bar = '<div id="cbar">Bundlers 50.54% Snipers 10.32% Dev 0% Dev Migrations 75/4.18K</div>';
+      const t = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'Pao $14.5K | Trojan', body: bar, rpc: { sigs, txs }, tw: { mode: 'live', wallets: { live: [W[0]], paper: [] }, safety: { dupSec: 0 } } });
+      await t.page.evaluate((m) => window.__agtw.guardScan(m), MINT);
+      t.clear();
+      await t.click('[data-bu="0.1"]'); await t.wait(400);
+      const md = await t.modal();
+      ok('Guard: a block-0 bundle with the dev\'s tool + dev dump is BLOCKED', md && /BLOCKED/.test(md) && /Bundled launch, dev dumped/.test(md) && /Block-0 bundle/.test(md) && /3 wallets bought 13%/.test(md) && /Dev dumped/.test(md) && !t.posts(/\/buy$/).length, md);
+      ok('Guard: uses Trojan\'s own "Bundlers %" from the coin bar', /bundle wallets still hold 51% of supply \(Trojan\)/.test(md), md);
+      const cm = await t.page.evaluate(() => window.__rpcCalls.length);
+      ok('Guard: reads signatures at "confirmed" (a seconds-old launch is not finalized yet)', cm > 0 && await t.page.evaluate(() => /confirmed/.test(JSON.stringify(window.__rpcLast || ''))), String(cm));
+      await t.page.keyboard.press('Escape'); await t.wait(200);
+      ok('no page errors (guard block-0)', !t.errs.length, t.errs.join(' | '));
       await t.page.close();
     }
     // ---------------------------------------------------------------- 10c · Axiom: Pulse cards + token page (mint read from the page)
