@@ -639,6 +639,22 @@ async function main() {
       await t.wait(600);
       v = await vis();
       ok('AG filter (smart): a hidden coin comes back as soon as AG matches it', v.join() === 'shown,shown,hidden', v.join());
+      await t.page.evaluate((m) => { window.__agtw.st.hiddenCoins.push(m); window.__agtw.scanCards(); }, MINT2); // you hid DAB yourself
+      v = await vis();
+      ok('hidden list: a coin you hid is hidden', v.join() === 'shown,hidden,hidden', v.join());
+      const nh0 = await t.page.evaluate(() => (window.__nh || []).length);
+      await t.click('[data-a="showall"]'); await t.wait(500);
+      v = await vis();
+      const fb2 = await t.page.evaluate(() => document.querySelector('#agtw .hf').innerText.replace(/\s+/g, ' '));
+      const chip2 = await t.page.evaluate((m) => (document.querySelector(`[data-pulse-token-address="${m}"] .agtw-c .am`) || {}).innerText || '', MINT);
+      ok('Show all (footbar): nothing hidden or dimmed, badges stay', v.join() === 'shown,shown,shown' && /Showing all/.test(fb2) && /AG 12/.test(chip2) && await t.page.evaluate(() => window.__agtw.st.showAll === true), v.join() + ' · ' + fb2);
+      await t.page.evaluate((p) => window.__fire('agMatches', p), pack({ [MINT]: JEV })); await t.wait(600);
+      v = await vis();
+      ok("Show all: stays on as the AG list changes, and the terminal's own Hide is not clicked", v.join() === 'shown,shown,shown' && (await t.page.evaluate(() => (window.__nh || []).length)) === nh0, v.join());
+      await t.click('[data-a="showall"]'); await t.wait(500);
+      v = await vis();
+      ok('Show all off: hiding is back (your hidden list was kept)', v.join() === 'shown,hidden,hidden' && (await t.page.evaluate(() => window.__agtw.st.hiddenCoins.length)) === 1, v.join());
+      await t.page.evaluate((m) => { window.__agtw.st.hiddenCoins = []; window.__fire('agMatches', { at: Date.now(), cardsAt: Date.now(), m: { [m[0]]: m[1], [m[2]]: Object.assign({}, m[1], { s: 'DAB', r: 70 }) } }); }, [MINT, JEV, MINT2]); await t.wait(600);
       await t.page.evaluate(() => { window.__agtw.st.filter.mode = 'dim'; window.__agtw.scanCards(); });
       v = await vis();
       ok('AG filter (dim): unmatched coins are dimmed instead', v.join() === 'shown,shown,dim', v.join());

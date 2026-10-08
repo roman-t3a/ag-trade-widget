@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.14.0
+- **Show all** on terminal lists (GMGN, Trojan, Axiom): one toggle in the footbar (or press H, or ⚙ → AG filter) and
+  no coin is hidden or dimmed any more, whatever hides it: the AG filter, the Buy Guard, or your own hidden list.
+  Badges and chips stay. The terminal's own Hide token isn't clicked while it's on. Toggle it off and everything is
+  as before (your hidden list is kept).
+
 ## 3.13.1
 - Buy Guard is faster and caches better.
   - All transaction batches go out at once (30 per batch on a keyed RPC such as Helius, 10 on the public one).

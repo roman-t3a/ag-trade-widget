@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.13.1
+// @version      3.14.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -932,6 +932,7 @@
       cardIntel: true,   // AG risk pill + hover peek on terminal cards
       filter: { mode: 'smart', native: false, after: 10 }, // AG filter on terminal lists (see Core.filterAction / nativeDue)
       hiddenCoins: [],
+      showAll: false,    // terminal lists: never hide or dim a coin (AG filter, Buy Guard, hidden list all paused)
       hiddenMeta: {},    // mint → { t: hidden at (ms), n: AG signals known at that time }
       unhideOnSignal: true, // a hidden coin comes back when AG fires a new signal on it
       autoReopen: true,  // GMGN: re-open the backtester tab in the background when it is gone for 30s
@@ -2274,6 +2275,8 @@
     #agtw i.hdt.g{background:#3DDC97}#agtw i.hdt.y{background:#F2B84B}#agtw i.hdt.r{background:#F05252}
     #agtw .hfa{background:none;border:0;font:600 10px 'IBM Plex Sans',Inter,system-ui,sans-serif;padding:0 6px;cursor:pointer;color:var(--mut2);white-space:nowrap;flex:none}
     #agtw .hf.y .hfi>span.g .k,#agtw .hf.r .hfi>span.g .k,#agtw .hf.y .hfi>span.n .k,#agtw .hf.r .hfi>span.n .k{display:none}#agtw.wide .hf .hfi>span .k{display:inline}
+    #agtw .hfs{background:none;border:1px solid var(--ln);border-radius:6px;font:600 10px 'IBM Plex Sans',Inter,system-ui,sans-serif;padding:1px 6px;margin:0 2px;cursor:pointer;color:var(--mut2);white-space:nowrap;flex:none}
+    #agtw .hfs.on{background:#2A2412;border-color:#5A4A1C;color:#FFE08A}
     #agtw .hf.y .hfa{color:#FFE08A}#agtw .hf.r .hfa{color:#F59AA6}
     #agtw .hhr{display:flex;align-items:center;gap:8px}
     #agtw .hhr .hn{display:flex;flex-direction:column;min-width:0;flex:1}#agtw .hhr .hn b{font-weight:600;font-size:11.5px}
@@ -2644,7 +2647,7 @@
           nativeTimes = nativeTimes.filter((t) => now - t < 60000);
           if (nativeTimes.length >= 30) { await sleep(5000); continue; }
           const mint = nativeQ.shift();
-          if (!st.filter.native || st.filter.mode !== 'smart' || !agLive() || agMatch(mint) || mint === getMint()) continue;
+          if (st.showAll || !st.filter.native || st.filter.mode !== 'smart' || !agLive() || agMatch(mint) || mint === getMint()) continue;
           const card = [...document.querySelectorAll(site.cards)].find((x) => site.cardMint(x.getAttribute(site.cardAttr || 'href')) === mint);
           const btn = card && site.nativeHide && site.nativeHide(card);
           if (!btn) continue;
@@ -2670,15 +2673,17 @@
         seen.add(hostEl);
         const mint = site.cardMint(el.getAttribute(site.cardAttr || 'href'));
         if (!mint) continue;
-        const cur = mint === getMint(), m = agMatch(mint), manual = hidden.has(mint) && !cur;
+        // "Show all" (footbar / H / ⚙): nothing is hidden or dimmed — not by the AG filter, the Buy Guard or your hidden
+        // list (kept for later); badges and chips stay
+        const SA = !!st.showAll, cur = mint === getMint(), m = agMatch(mint), manual = hidden.has(mint) && !cur && !SA;
         if (!firstSeen.has(mint)) firstSeen.set(mint, now);
-        const act = Core.filterAction(F.mode, live, !!m, cur), gb = !cur && gdBlocked(mint);
+        const act0 = Core.filterAction(F.mode, live, !!m, cur), act = SA && act0 !== 'badge' ? 'show' : act0, gb = !cur && !SA && gdBlocked(mint);
         if (GD && st.guard.on && st.guard.cardScan) { const r0 = el0Rect(row); if (r0 && r0.bottom > 0 && r0.top < vh) gdWant(mint); }
         setHidden(row, manual || act === 'hide' || (gb && st.guard.cardAct === 'hide'));
         const dimIt = act === 'dim' || (gb && st.guard.cardAct === 'dim');
         if (row.classList.contains('agtw-dim') !== dimIt) row.classList.toggle('agtw-dim', dimIt);
         if (m) nM++; else if (act !== 'show') nH++;
-        if (site.nativeHide && Core.nativeDue(F, live, !!m, firstSeen.get(mint), now)) queueNative(mint);
+        if (!SA && site.nativeHide && Core.nativeDue(F, live, !!m, firstSeen.get(mint), now)) queueNative(mint);
         if (manual) { watchHidden(mint); continue; }
         if (act === 'hide') continue;
         const ag = (m && F.mode !== 'off' ? agChip(mint, m) : '') + tbBadge(mint) + tbCardChip(mint) + gdChip(mint);
@@ -4002,7 +4007,7 @@
     }
     function footbarHtml() {
       const { items, action, level } = healthItems();
-      return `<div class="hf ${level}"><button class="hfi" data-a="p:health" title="Connection health · click for details">${items.map((x) => `<span class="${x.c}" title="${x.k}"><i class="hdt ${x.c}"></i><span class="k">${x.k}</span><span class="v ${x.c === 'y' || x.c === 'r' ? x.c : ''}">${escH(x.v)}</span></span>`).join('')}</button>${action ? `<button class="hfa" data-ha="${action.a}">${escH(action.l)} ›</button>` : ''}</div>`;
+      return `<div class="hf ${level}"><button class="hfi" data-a="p:health" title="Connection health · click for details">${items.map((x) => `<span class="${x.c}" title="${x.k}"><i class="hdt ${x.c}"></i><span class="k">${x.k}</span><span class="v ${x.c === 'y' || x.c === 'r' ? x.c : ''}">${escH(x.v)}</span></span>`).join('')}</button>${env !== 'ag' ? `<button class="hfs ${st.showAll ? 'on' : ''}" data-a="showall" aria-pressed="${st.showAll ? 'true' : 'false'}" title="${st.showAll ? 'Showing every coin: nothing hidden or dimmed (H)' : 'Hiding / dimming coins on the list · click to show all (H)'}">${st.showAll ? 'Showing all' : 'Show all'}</button>` : ''}${action ? `<button class="hfa" data-ha="${action.a}">${escH(action.l)} ›</button>` : ''}</div>`;
     }
     const spark = (a, c) => { if (!a || a.length < 2) return '<svg width="60" height="18"></svg>'; const mx = Math.max(...a) || 1; return `<svg width="60" height="18" viewBox="0 0 60 18"><polyline points="${a.map((v, i) => `${(i * 60) / (a.length - 1)},${(17 - (v / mx) * 15).toFixed(1)}`).join(' ')}" fill="none" stroke="${c}" stroke-width="1.5" stroke-opacity=".85"></polyline></svg>`; };
     const hcol = { g: '#3DDC97', y: '#F2B84B', r: '#F05252', n: '#4B5160' };
@@ -4156,7 +4161,7 @@
           ${f('stagger', 'Stagger between wallets (ms)', st.stagger, 50)}${f('variance', 'Token split variance (%)', st.variance, 1)}</div>
         <span class="sm2">Hotkeys</span>
         <div class="sh"><span class="seg">${[['on', 'On'], ['hover', 'Hover only'], ['off', 'Off']].map(([k, l]) => `<button class="${st.hotkeys === k ? 'on' : ''}" data-hk="${k}">${l}</button>`).join('')}</span>${ck('kbHints', 'Key hints on buttons', st.kbHints)}</div>
-        <div class="keys mut sm"><span><kbd>1–8</kbd> buy</span><span><kbd>⇧1–8</kbd> sell</span><span><kbd>X</kbd> initials</span><span><kbd>U</kbd> unit</span><span><kbd>S</kbd> split</span><span><kbd>G</kbd> group</span><span><kbd>Alt+1–3</kbd> preset</span><span><kbd>D</kbd> dip</span><span><kbd>L</kbd> live</span><span><kbd>C</kbd> collapse</span><span><kbd>B</kbd> holdings bar</span><span><kbd>/</kbd> custom</span><span><kbd>Esc</kbd> close</span></div>
+        <div class="keys mut sm"><span><kbd>1–8</kbd> buy</span><span><kbd>⇧1–8</kbd> sell</span><span><kbd>X</kbd> initials</span><span><kbd>U</kbd> unit</span><span><kbd>S</kbd> split</span><span><kbd>G</kbd> group</span><span><kbd>Alt+1–3</kbd> preset</span><span><kbd>D</kbd> dip</span><span><kbd>L</kbd> live</span><span><kbd>C</kbd> collapse</span><span><kbd>B</kbd> holdings bar</span><span><kbd>H</kbd> show all coins</span><span><kbd>/</kbd> custom</span><span><kbd>Esc</kbd> close</span></div>
         <span class="sm2">Alerts <span class="mut sm">(coins you hold · run by the backtester tab)</span></span>
         <div class="eg two">${ck('al.dev.on', 'Dev sells', A.dev.on)}${f('al.dev.pct', 'when ≥ % of supply', A.dev.pct, 0.5)}
           ${ck('al.dev.auto', 'Auto-sell 100% on a dev sell', A.dev.auto)}<span></span>
@@ -4169,6 +4174,7 @@
           ${f('qb', 'Card quick buy (◎)', st.qb, 0.01)}${ck('cards', 'Holdings + quick buy on cards', st.cards)}</div>
         ${env === 'ag' ? '' : `<span class="sm2">AG filter on ${SN} lists <span class="mut sm">(your filtered AG Live Terminal)</span></span>
         <div class="sh"><span class="seg">${[['smart', 'Smart hide'], ['dim', 'Dim'], ['badge', 'Badges only'], ['off', 'Off']].map(([k, l]) => `<button class="${st.filter.mode === k ? 'on' : ''}" data-fm="${k}">${l}</button>`).join('')}</span></div>
+        <div class="eg two">${ck('showAll', 'Show all coins: never hide or dim (H)', st.showAll)}<span></span></div>
         <div class="mut sm">Smart hide is reversible: a coin is back the moment AG matches it. Your current coin is never hidden, and while the list is stale (backtester closed or Live Terminal off screen) only badges show.</div>
         ${site && site.nativeHide ? `<div class="eg two">${ck('flt.native', `Also use ${SN}'s own Hide token`, st.filter.native)}${f('flt.after', 'after a coin is unmatched for (min)', st.filter.after, 1)}</div>
         <div class="mut sm">${SN}'s own hide stays hidden in your ${SN} account: if AG matches the coin later it won't come back by itself. ${nativeDone.size} hidden that way so far.</div>` : ''}`}
@@ -4185,6 +4191,11 @@
         <div class="mut sm">AG stores slippage / fee / MEV per wallet, not per order, so this updates the wallets themselves (the AG bot uses them too).</div></div>`;
     }
 
+    function toggleShowAll() {
+      if (env === 'ag') return;
+      st.showAll = !st.showAll; save(); scanCards(); render();
+      toast(st.showAll ? 'Showing every coin: nothing hidden or dimmed (H to undo)' : 'Hiding back on: AG filter, Buy Guard and your hidden coins');
+    }
     async function toggleMode() {
       if (st.mode === 'paper' && !(await ask({ tone: 'warn', title: 'Switch to LIVE?', sub: 'Buttons, hotkeys and triggers will place REAL orders with your AG wallets.',
         actions: [{ label: 'Stay on paper', v: null, kind: 'ghost' }, { label: 'Go LIVE', v: 'go', kind: 'danger' }] }))) return;
@@ -4287,6 +4298,7 @@
         case 'intelr': loadIntel(getMint(), true); return;
         case 'imore': ui.imore = !ui.imore; return render();
         case 'idip': { const mc = mcapNow(getMint()); ui.panel = 'trig'; ui.tf.tab = 'dip'; if (mc) ui.tf.target = kfmt(mc * 0.7); return render(); }
+        case 'showall': return toggleShowAll();
         case 'unhide': st.hiddenCoins = []; st.hiddenMeta = {}; save(); scanCards(); toast('All hidden coins are back'); return render();
         case 'mode': return toggleMode();
         case 'col': ui.collapsed = !ui.collapsed; savePos(); if (!ui.collapsed) loadPos(); return render();
@@ -4365,6 +4377,7 @@
       else if (d.s === 'autoReopen') st.autoReopen = ch;
       else if (d.s === 'barOnAg') st.barOnAg = ch;
       else if (d.s === 'intelOn') { st.intel.on = ch; if (ch) loadIntel(getMint()); }
+      else if (d.s === 'showAll') { st.showAll = ch; save(); scanCards(); }
       else if (d.s === 'unhideOnSignal') { st.unhideOnSignal = ch; save(); }
       else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
@@ -4631,6 +4644,7 @@
         case 'l': toggleMode(); break;
         case 'c': ui.collapsed = !ui.collapsed; savePos(); render(); break;
         case 'b': st.barHidden = !st.barHidden; save(); renderBar(); break;
+        case 'h': if (env === 'ag') { done = false; break; } toggleShowAll(); break;
         case '/': { if (ui.collapsed) { ui.collapsed = false; render0(); } const i = el.querySelector('[data-a=camt]'); if (i) i.focus(); break; }
         case 'escape': if (ui.panel) { ui.panel = null; render(); } else done = false; break;
         default: done = false;
