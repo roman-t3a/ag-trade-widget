@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.13.0
+- **Buy Guard (Trojan).** Before a buy leaves the widget (buttons, hotkeys, Trenches ⚡, dip / DCA orders, bundle
+  rules), the coin gets a 0–100 score. It reads the coin's first 60 transactions over Solana RPC and finds the creator,
+  the biggest group of wallets sharing one transaction shape (a launch tool's farm), the dev's sells and slot-0
+  snipers, then adds Trojan's holders data.
+  - Checks: farm stream, dev sells into it, reused farm wallets (1,000+ transactions in the 4 days before), a farm
+    you saved, a dev you flagged, nuke risk (your buy pushes outside buying past a round SOL line in the first
+    10 min, where a launcher's Sniper Guard may sell into you), bundles already out, shared funder, dev record (off).
+  - Clear → the buy goes. Caution → shrunk to ◎ 0.05 (asks first for a manual buy). Block → not sent: cancel, buy
+    small, or hold 2 s to buy anyway. Orders and bundle rules skip a blocked coin for 30 min. Every stop is logged.
+  - "Why?" draws the launch: lanes for the dev, the farm, slot-0 and outside buyers, the transaction shapes, and the
+    dev's holding over time.
+  - Bundles panel → shield button: the guard view for the coin, the log, and "Remember this farm" / "Flag this dev".
+  - Trenches cards in view are checked one at a time: a GUARD chip, and blocked cards dimmed (or hidden, or chip only).
+  - ⚙ → Buy Guard: on / off, warn · shrink · block, score lines, shrink size, nuke lines, RPC address (public
+    mainnet by default; a key-based RPC is much faster), what to do if the check is late, each check and its weight.
+  - New `@connect` hosts for Solana RPC providers (mainnet, Helius, QuickNode, Triton, Ankr, Alchemy, Shyft).
+
 ## 3.12.1
 - Bundles: the coin's **pool** (pump.fun bonding curve, or the AMM pool after migration) is no longer listed as a
   bundle. It is the #1 holder and its two Trojan rows differ, so it looked like one. It's skipped when Trojan flags it

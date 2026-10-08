@@ -29,6 +29,7 @@ Two Tampermonkey userscripts:
 - GMGN, Trojan and Axiom (Pulse) cards: AG risk pill + hover peek, quick buy, hide coin (it comes back on a new AG signal).
 - Holdings bar (movable, resizable, hide positions, sort; sold positions vanish at once), wide 2-column layout, hotkeys.
 - Trojan bundles: panel per coin, bundle detail, rules (sell on dump, buy when bundles are out, alerts, watched funders), feed and badges.
+- Trojan Buy Guard: every buy (buttons, cards ⚡, orders, bundle rules) is scored first from Trojan's holders data and the coin's first transactions (Solana RPC). It spots a launch-tool farm (one transaction shape across many wallets), the dev selling into it, reused farm wallets, Sniper Guard nuke risk, saved farms and flagged devs, then lets the buy through, shrinks it, or blocks it (hold 2 s to override). Trenches cards get a GUARD chip.
 - Connection health footbar (Relay · AG · Feed · Orders) with a diagnostics panel.
 
 ## How the tabs talk

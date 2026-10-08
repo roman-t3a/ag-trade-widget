@@ -54,7 +54,7 @@ function backend() {
   };
 }
 
-async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth, title = 'JEVABLE ↑ $6.97K | GMGN.AI', gm = {}, route = null } = {}) {
+async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { width: 1100, height: 1100 }, body = '', path: pth, title = 'JEVABLE ↑ $6.97K | GMGN.AI', gm = {}, route = null, rpc = null } = {}) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1.5 });
   const be = backend();
   const errs = [];
@@ -75,7 +75,7 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
   });
   const url = pth || (env === 'ag' ? 'https://backtester.alphagardeners.xyz/#token/' + MINT : 'https://gmgn.ai/sol/token/' + MINT);
   await page.goto(url);
-  await page.evaluate(([tw, orders, env, ver, gm]) => {
+  await page.evaluate(([tw, orders, env, ver, gm, rpc]) => {
     localStorage.setItem('agtwTest', '1');
     window.GM_info = { script: { version: ver } }; window.__VER = ver;
     window.__gm = { tw: Object.assign({ mode: 'live', wallets: { live: [], paper: [] } }, tw), twOrders: orders, agRelayAt: env !== 'ag' ? 0 : Date.now(), ...gm };
@@ -83,14 +83,31 @@ async function setup(browser, { env = 'ag', tw = {}, orders = [], viewport = { w
     window.GM_getValue = (k, d) => (k in __gm ? JSON.parse(JSON.stringify(__gm[k])) : d);
     window.GM_setValue = (k, v) => { const o = __gm[k]; __gm[k] = JSON.parse(JSON.stringify(v)); (__gmL[k] || []).forEach((f) => f(k, o, v, false)); };
     window.GM_addValueChangeListener = (k, f) => { (__gmL[k] = __gmL[k] || []).push(f); };
-    window.GM_xmlhttpRequest = (o) => { const u = new URL(o.url); window.__be(o.method, u.pathname + u.search, o.data || null).then((j) => setTimeout(() => o.onload({ status: (j && j.__status) || 200, responseText: JSON.stringify(j) }), 5)); };
+    // Solana RPC (Buy Guard): answered from the test's launches · rpc = { sigs: {addr: [sig rows, newest first]}, txs: {sig: tx}, busy: {addr: blockTime}, down }
+    window.__rpcData = rpc; window.__rpcCalls = [];
+    window.__rpc = (b) => {
+      const D = window.__rpcData || {}, one = (q) => {
+        window.__rpcCalls.push(q.method);
+        if (q.method === 'getSignaturesForAddress') {
+          const [a, o] = q.params;
+          if (D.busy && D.busy[a]) return { jsonrpc: '2.0', id: q.id, result: Array.from({ length: 1000 }, (_, i) => ({ signature: 'b' + i, slot: 1, err: null, blockTime: D.busy[a] + i })) };
+          return { jsonrpc: '2.0', id: q.id, result: o && o.before ? [] : (D.sigs && D.sigs[a]) || [] };
+        }
+        if (q.method === 'getTransaction') return { jsonrpc: '2.0', id: q.id, result: (D.txs && D.txs[q.params[0]]) || null };
+        return { jsonrpc: '2.0', id: q.id, error: { code: -32601 } };
+      };
+      return Array.isArray(b) ? b.map(one) : one(b);
+    };
+    window.GM_xmlhttpRequest = (o) => { const u = new URL(o.url);
+      if (/solana|rpc/.test(u.hostname)) { const D = window.__rpcData || {}; setTimeout(() => (D.down ? o.onerror({}) : o.onload({ status: 200, responseText: JSON.stringify(window.__rpc(JSON.parse(o.data))) })), D.delay || 5); return; }
+      window.__be(o.method, u.pathname + u.search, o.data || null).then((j) => setTimeout(() => o.onload({ status: (j && j.__status) || 200, responseText: JSON.stringify(j) }), 5)); };
     window.unsafeWindow = window;
     window.__opened = []; window.GM_openInTab = (u, o) => { window.__opened.push({ u, o }); };
     window.__fire = (k, v) => (__gmL[k] || []).forEach((f) => f(k, null, v, true));
     window.__sockH = {}; window.__emits = [];
     window.io = () => ({ connected: true, on: (e, f) => { (__sockH[e] = __sockH[e] || []).push(f); if (e === 'connect') setTimeout(f, 30); }, emit: (...a) => __emits.push(a.join(' ')) });
     window.__sock = (e, d) => (__sockH[e] || []).forEach((f) => f(d));
-  }, [tw, orders, env, VER, gm]);
+  }, [tw, orders, env, VER, gm, rpc]);
   await page.addScriptTag({ content: SCRIPT });
   await page.waitForTimeout(900);
   const api = {
@@ -429,6 +446,122 @@ async function main() {
       const head = await t.page.evaluate(() => (document.querySelector('#agtw') || {}).innerText || '');
       ok('Trojan token page: widget shows the symbol from the title', /DATACENTER/.test(head), (head.match(/.{0,30}DATACENTER.{0,30}/) || [head.slice(0, 80)])[0]);
       ok('no page errors (Trojan token)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+
+    // ---------------------------------------------------------------- 10f · Trojan Buy Guard: block, shrink, override, rules, cards, memory
+    {
+      const L = require('../fixtures/launch.js');
+      const M3 = 'TermXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump', M4 = 'NoRpcXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXpump';
+      const cat = L.cat(MINT, { t0: Math.floor(Date.now() / 1000) - 180 }), cl = L.clean(MINT2), tm = L.terminal(M3), sigs = {}, txs = {}, busy = {};
+      for (const [m, f] of [[MINT, cat], [MINT2, cl], [M3, tm]]) {
+        sigs[m] = f.txs.map((t) => ({ signature: t.transaction.signatures[0], slot: t.slot, err: null, blockTime: t.blockTime })).reverse();
+        for (const t of f.txs) txs[t.transaction.signatures[0]] = t;
+      }
+      for (const w of cat.farm.slice(0, 5)) busy[w] = cat.txs[0].blockTime - 3 * 86400;
+      const rpc = { sigs, txs, busy };
+      const t = await setup(browser, { env: 'trojan', path: `https://trojan.com/terminal?token=${MINT}&chain=sol`, title: 'cat $3.24K | Trojan', rpc, tw: { mode: 'live', wallets: { live: [W[0]], paper: [] }, confirmAbove: 5, safety: { dupSec: 0 } } });
+      await t.page.evaluate((m) => window.__agtw.guardScan(m), MINT);
+      const g = await t.page.evaluate((m) => { const x = window.__agtw.gScan[m]; return { st: x.st, n: x.scan && x.scan.farm && x.scan.farm.n, busy: x.busy }; }, MINT);
+      ok('Guard: reads the launch over RPC (29-wallet farm, 5/5 busy wallets)', g.st === 'ok' && g.n === 29 && g.busy && g.busy.n === 5, JSON.stringify(g));
+      t.clear();
+      await t.click('[data-bu="0.5"]'); await t.wait(400);
+      let md = await t.modal();
+      ok('Guard: a buy on the cat launch is BLOCKED before anything is sent', md && /Buy Guard/.test(md) && /BLOCKED/.test(md) && /Launch-tool dump pattern/.test(md) && /Farm stream/.test(md) && /Dev sells into it/.test(md) && /Reused farm wallets/.test(md) && !t.posts(/\/buy$/).length, md);
+      ok('Guard: nuke-risk bar for a fresh launch', /NUKE RISK/.test(md) && /Sniper Guard/.test(md), md && md.slice(0, 400));
+      await t.shot('40-guard-block');
+      await t.page.click('#agtw .mbox [data-a="gwhy"]'); await t.wait(250);
+      md = await t.modal();
+      ok('Guard: "Why?" draws the launch (lanes, shapes, dev holding)', /TRANSACTION SHAPES/.test(md) && /DEV HOLDING · 25\.2% → 0\.0%/.test(md) && /legacy · 0\.000029 ◎ fee/.test(md), md.slice(-500));
+      await t.shot('41-guard-why');
+      await t.page.keyboard.press('Enter'); await t.wait(300);
+      ok('Guard: Enter = cancel (no buy, logged, coin skipped by orders for 30 min)', !(await t.modal()) && !t.posts(/\/buy$/).length && (await t.gm('gdLog')).some((x) => x.kind === 'block') && await t.page.evaluate((m) => window.__agtw.gdSkip[m] > Date.now(), MINT));
+      await t.click('[data-bu="0.5"]'); await t.wait(400);
+      await t.modalBtn('Buy ◎ 0.05'); await t.wait(500);
+      let b = t.posts(/\/buy$/);
+      ok('Guard: "Buy ◎ 0.05 instead" shrinks the buy', b.length === 1 && Math.abs(b[0].body.amount - 0.05) < 1e-6, JSON.stringify(b.map((x) => x.body.amount)));
+      t.clear();
+      await t.click('[data-bu="0.5"]'); await t.wait(400);
+      const hb = await t.page.locator('#agtw .mbox [data-hold]').boundingBox();
+      await t.page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2); await t.page.mouse.down(); await t.wait(800); await t.page.mouse.up(); await t.wait(300);
+      ok('Guard: a short press on "Hold 2 s" does nothing', !!(await t.modal()) && !t.posts(/\/buy$/).length);
+      await t.page.mouse.down(); await t.wait(2300); await t.page.mouse.up(); await t.wait(600);
+      b = t.posts(/\/buy$/);
+      ok('Guard: holding 2 s buys anyway (full size, no 2nd confirm)', b.length === 1 && b[0].body.amount === 0.5 && !(await t.modal()), JSON.stringify(b.map((x) => x.body.amount)));
+      t.clear();
+      // orders / bundle rules: no dialog — skipped (blocked) or shrunk (caution)
+      let x = await t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.3, mode: 'live', interactive: false, note: 'bundle rule' }), [MINT, W[0]]);
+      ok('Guard: a rule/order buy on a coin you blocked is skipped', x.ok === 0 && /blocked this coin/.test(x.err), JSON.stringify(x));
+      await t.page.evaluate((m) => { delete window.__agtw.gdSkip[m]; }, MINT);
+      x = await t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.3, mode: 'live', interactive: false, note: 'bundle rule' }), [MINT, W[0]]);
+      ok('Guard: …and a fresh rule buy is blocked by the score', x.ok === 0 && /Launch-tool dump pattern/.test(x.err) && !t.posts(/\/buy$/).length, JSON.stringify(x));
+      // clean launch: straight through
+      await t.page.evaluate((m) => window.__agtw.guardScan(m), MINT2);
+      x = await t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.1, mode: 'live', interactive: true }), [MINT2, W[0]]);
+      ok('Guard: a clean launch buys straight away (no dialog)', x.ok === 1 && t.posts(/\/buy$/).length === 1 && !(await t.modal()), JSON.stringify(x));
+      t.clear();
+      // caution (a terminal default, with a lower caution line): the shrink is the default answer
+      await t.page.evaluate(() => { window.__agtw.st.guard.caution = 10; });
+      await t.page.evaluate((m) => window.__agtw.guardScan(m), M3);
+      const pr = t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.5, mode: 'live', interactive: true }), [M3, W[0]]);
+      await t.wait(400);
+      md = await t.modal();
+      ok('Guard: caution asks, with the shrunk buy as the default', /CAUTION/.test(md) && /terminal default/.test(md) && /Enter = Buy ◎ 0\.05/.test(md), md);
+      await t.page.keyboard.press('Enter'); await pr; await t.wait(300);
+      b = t.posts(/\/buy$/);
+      ok('Guard: Enter on caution = the shrunk buy', b.length === 1 && Math.abs(b[0].body.amount - 0.05) < 1e-6, JSON.stringify(b.map((y) => y.body.amount)));
+      const x2 = await t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.5, mode: 'live', interactive: false, note: 'dip' }), [M3, W[0]]);
+      b = t.posts(/\/buy$/);
+      ok('Guard: a caution order is shrunk without asking', x2.ok === 1 && b.length === 2 && Math.abs(b[1].body.amount - 0.05) < 1e-6, JSON.stringify(b.map((y) => y.body.amount)));
+      await t.page.evaluate(() => { window.__agtw.st.guard.caution = 30; });
+      t.clear();
+      // RPC down: the check falls back to what Trojan shows and doesn't hold the buy
+      await t.page.evaluate(() => { window.__rpcData.down = true; });
+      x = await t.page.evaluate(([m, w]) => window.__agtw.execBuy({ mint: m, wallets: [w], amount: 0.1, mode: 'live', interactive: true }), [M4, W[0]]);
+      const g4 = await t.page.evaluate((m) => window.__agtw.gScan[m], M4);
+      ok('Guard: RPC down → no launch read, buy not held', x.ok === 1 && g4 && (g4.st === 'err' || g4.st === 'run'), JSON.stringify({ x, st: g4 && g4.st }));
+      await t.page.evaluate(() => { window.__rpcData.down = false; });
+      t.clear();
+      // panel: the guard view, memory
+      await t.click('[data-a="gview"]'); await t.wait(300);
+      let pv = await t.page.evaluate(() => (document.querySelector('#agtw .bund') || {}).innerText || '');
+      ok('Guard: the bundles panel has a Buy Guard view (score, checks, log)', /Buy Guard/.test(pv) && /BLOCKED/.test(pv) && /Guard log/.test(pv) && /cancelled/.test(pv), pv.replace(/\s+/g, ' ').slice(0, 300));
+      await t.shot('42-guard-panel');
+      await t.click('[data-gmem="farm"]'); await t.wait(200);
+      await t.click('[data-gmem="dev"]'); await t.wait(300);
+      const mem = await t.gm('gdMem');
+      ok('Guard: remember this farm / flag this dev', mem && mem.farms.length === 1 && mem.farms[0].wallets.length === 29 && Object.values(mem.devs).some((d) => d.flag), JSON.stringify(mem).slice(0, 200));
+      const r2 = await t.page.evaluate((m) => window.__agtw.guardEval(m, 0.1), MINT);
+      ok('Guard: a saved farm and a flagged dev count next time', r2.checks.some((c) => c.id === 'seen') && r2.checks.some((c) => c.id === 'flagged'), r2.checks.map((c) => c.id).join(','));
+      // settings
+      await t.click('[data-a="p:set"]'); await t.wait(300);
+      const sv = await t.page.evaluate(() => document.querySelector('#agtw .stp').innerText);
+      ok('Guard: settings section (actions, lines, RPC, checks)', /Buy Guard/.test(sv) && /Shrink \+ block/.test(sv) && /Nuke lines/.test(sv) && /RPC/.test(sv) && /Farm stream/.test(sv), sv.slice(0, 200));
+      await t.page.click('#agtw [data-s="guard.on"]'); await t.wait(200);
+      await t.click('[data-a="panelx"]'); await t.wait(200);
+      await t.click('[data-bu="0.5"]'); await t.wait(500);
+      ok('Guard: off → the blocked coin buys without the guard', !(await t.modal()) && t.posts(/\/buy$/).length === 1);
+      ok('no page errors (buy guard)', !t.errs.length, t.errs.join(' | '));
+      await t.page.close();
+    }
+    // ---------------------------------------------------------------- 10g · Buy Guard on the Trenches cards
+    {
+      const L = require('../fixtures/launch.js');
+      const cat = L.cat(MINT), cl = L.clean(MINT2), sigs = {}, txs = {};
+      for (const [m, f] of [[MINT, cat], [MINT2, cl]]) { sigs[m] = f.txs.map((q) => ({ signature: q.transaction.signatures[0], slot: q.slot, err: null, blockTime: q.blockTime })).reverse(); for (const q of f.txs) txs[q.transaction.signatures[0]] = q; }
+      const cards = [MINT, MINT2].map((m, i) => `<a href="/terminal?token=${m}&chain=sol" style="display:block;position:relative;height:120px;margin:10px 0 0 420px;width:472px;background:#16181c;border:1px solid #222;color:#ddd;padding:8px;box-sizing:border-box"><img alt="${i ? 'CLEAN' : 'cat'}" width="1" height="1">0.69 V $5.28K MC</a>`).join('');
+      const t = await setup(browser, { env: 'trojan', path: 'https://trojan.com/trenches', title: 'Trenches | Trojan', body: cards, rpc: { sigs, txs }, tw: { mode: 'live', wallets: { live: [W[0]] } } });
+      await t.wait(4500);
+      const r = await t.page.evaluate(([m, m2]) => { const a = document.querySelector(`a[href="/terminal?token=${m}&chain=sol"]`), b2 = document.querySelector(`a[href="/terminal?token=${m2}&chain=sol"]`);
+        return { c1: (a.querySelector('.agtw-c') || {}).innerText || '', c2: (b2.querySelector('.agtw-c') || {}).innerText || '', dim1: a.classList.contains('agtw-dim'), dim2: b2.classList.contains('agtw-dim') }; }, [MINT, MINT2]);
+      ok('Guard cards: the cards in view are checked; BLOCK chip + dimmed, CLEAR chip', /GUARD · BLOCK/.test(r.c1) && /GUARD · CLEAR/.test(r.c2) && r.dim1 && !r.dim2, JSON.stringify(r));
+      const sc = await t.page.evaluate(() => window.__rpcCalls.filter((x) => x === 'getSignaturesForAddress').length);
+      ok('Guard cards: card checks are light (no farm-wallet history calls)', sc === 2, String(sc));
+      await t.page.screenshot({ path: `${OUT}/43-guard-cards.png` });
+      t.clear();
+      await t.page.click(`a[href="/terminal?token=${MINT}&chain=sol"] .agtw-c .qb`); await t.wait(500);
+      ok('Guard cards: ⚡ on a blocked card opens the guard, nothing sent', /BLOCKED/.test((await t.modal()) || '') && !t.posts(/\/buy$/).length);
+      ok('no page errors (guard cards)', !t.errs.length, t.errs.join(' | '));
       await t.page.close();
     }
     // ---------------------------------------------------------------- 10c · Axiom: Pulse cards + token page (mint read from the page)

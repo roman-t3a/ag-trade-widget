@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AG Trade Widget
 // @namespace    milerius.ag.trade
-// @version      3.12.1
+// @version      3.13.0
 // @description  Floating quick buy/sell panel (GMGN / Axiom style) that trades through your Alpha Gardeners wallets. Buy in SOL / USD / % of supply, sell in % or SOL, wallet groups, split buys (jitter / stagger), consolidate / split planner, edit-in-place presets, auto exits, USD PnL, paper or LIVE. Works on the AG backtester, GMGN, Trojan and Axiom.
 // @match        https://backtester.alphagardeners.xyz/*
 // @match        https://gmgn.ai/*
@@ -21,6 +21,13 @@
 // @grant        GM_openInTab
 // @grant        unsafeWindow
 // @connect      backtester.alphagardeners.xyz
+// @connect      api.mainnet-beta.solana.com
+// @connect      helius-rpc.com
+// @connect      quiknode.pro
+// @connect      rpcpool.com
+// @connect      ankr.com
+// @connect      alchemy.com
+// @connect      shyft.to
 // @require      https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js#sha256=c+uha8iV/fpFTifsuA3vMe3o2GH5nhdf+TsRDqvsBE8=
 // ==/UserScript==
 
@@ -560,6 +567,153 @@
         nativeHide: (card) => card.querySelector('button[aria-label="Hide token"]'),
       },
     ];
+    // ---- Buy Guard: read a launch from its first transactions (Solana RPC getTransaction, jsonParsed) and score the
+    // coin before we buy. A launch tool (Proxima-style Block-0 / Organic holders, or any bundler) repeats ONE
+    // transaction shape across all its wallets, and usually sells the dev's bag into its own buy stream.
+    // Programs every trade calls (never a fingerprint): system, compute budget, token programs, ATA, memo, pump.fun
+    // curve + fee program + AMM
+    const GUARD_COMMON = new Set(['11111111111111111111111111111111', 'ComputeBudget111111111111111111111111111111', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+      'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo', '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', 'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ',
+      'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA']);
+    const JITO_TIPS = new Set(['96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5', 'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe', 'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
+      'ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49', 'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh', 'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
+      'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL', '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT']);
+    // one transaction → { slot, t, sig, w (fee payer), tok (its token change), sol (SOL it spent, + = out), side, create, print }
+    function txParse(t, mint) {
+      if (!t || !t.transaction || !t.meta || t.meta.err) return null;
+      const m = t.transaction.message || {}, keys = (m.accountKeys || []).map((k) => (typeof k === 'string' ? { pubkey: k } : k || {}));
+      const si = Math.max(0, keys.findIndex((k) => k.signer)), w = keys[si] && keys[si].pubkey;
+      if (!w) return null;
+      const pid = (i) => i.programId || (keys[i.programIdIndex] || {}).pubkey;
+      const top = (m.instructions || []).map(pid).filter(Boolean);
+      const inner = [].concat(...((t.meta.innerInstructions || []).map((x) => x.instructions || [])));
+      let tip = '';
+      for (const i of (m.instructions || []).concat(inner)) {
+        const p = i.parsed;
+        if (p && typeof p === 'object' && p.type === 'transfer' && p.info && JITO_TIPS.has(p.info.destination)) tip = 'jito';
+      }
+      const bal = (arr) => { const o = {}; for (const b of arr || []) if (b && b.mint === mint && b.owner) o[b.owner] = (o[b.owner] || 0) + (num(b.uiTokenAmount && (b.uiTokenAmount.uiAmountString ?? b.uiTokenAmount.uiAmount)) || 0); return o; };
+      const pre = bal(t.meta.preTokenBalances), post = bal(t.meta.postTokenBalances), d = {};
+      for (const o of new Set(Object.keys(pre).concat(Object.keys(post)))) { const x = (post[o] || 0) - (pre[o] || 0); if (Math.abs(x) > 1e-6) d[o] = x; }
+      const logs = (t.meta.logMessages || []).join('\n'), postSum = Object.values(post).reduce((a, x) => a + x, 0);
+      const create = !Object.keys(pre).length && (/Instruction: Create(V2)?\b/.test(logs) || postSum > 1e8);
+      const tok = d[w] || 0, lam = ((t.meta.preBalances || [])[si] || 0) - ((t.meta.postBalances || [])[si] || 0);
+      const routers = [...new Set(top.filter((p) => !GUARD_COMMON.has(p)))].sort();
+      const ver = t.version === 'legacy' || t.version == null ? 'legacy' : 'v' + t.version;
+      let pool = null, pmax = 0;
+      if (create) for (const [o, x] of Object.entries(post)) if (o !== w && x > pmax) { pmax = x; pool = o; }
+      return { slot: num(t.slot) || 0, t: num(t.blockTime) || null, sig: (t.transaction.signatures || [])[0] || null, w, tok, sol: lam / 1e9,
+        side: create ? 'create' : tok > 0 ? 'buy' : tok < 0 ? 'sell' : 'other', create, supply: create && postSum > 0 ? postSum : null, pool,
+        fee: num(t.meta.fee) || 0, ver, routers, tip, print: `${ver}|${num(t.meta.fee) || 0}|${routers.join(',')}|${tip}` };
+    }
+    const printText = (p) => { const [v, fee, r, tip] = String(p || '').split('|'); return `${v} · ${(Number(fee) / 1e9).toFixed(6).replace(/0+$/, '')} ◎ fee${r ? ' · router ' + r.split(',').map((x) => x.slice(0, 6)).join('+') : ''}${tip ? ' · ' + tip + ' tip' : ''}`; };
+    // the launch, from its first transactions (oldest first): who created it, the biggest group of wallets sharing one
+    // transaction shape (the farm), what the dev did, slot-0 snipers and what outside buyers put in
+    function launchScan(txs, mint, o) {
+      o = o || {};
+      const ev = (txs || []).map((t) => txParse(t, mint)).filter(Boolean);
+      ev.sort((a, b) => a.slot - b.slot); // stable: same-slot order as given
+      const c = ev.find((e) => e.create);
+      if (!c) return { ok: false, why: 'creation not in the transactions read', n: ev.length };
+      const s0 = c.slot, dev = c.w, supply = c.supply || 1e9, rel = (e) => e.slot - s0;
+      const trades = ev.filter((e) => e !== c && (e.side === 'buy' || e.side === 'sell') && e.w !== c.pool);
+      const P = {};
+      for (const e of trades) {
+        const p = P[e.print] || (P[e.print] = { print: e.print, routers: e.routers, ws: new Set(), buys: 0, sells: 0, tok: 0, dev: 0, first: Infinity, last: -1 });
+        if (e.w === dev) { p.dev++; continue; }
+        if (e.side === 'buy') { p.buys++; p.ws.add(e.w); p.tok += e.tok; p.first = Math.min(p.first, rel(e)); p.last = Math.max(p.last, rel(e)); } else p.sells++;
+      }
+      const prints = Object.values(P).map((p) => ({ print: p.print, routers: p.routers, wallets: [...p.ws], n: p.ws.size, buys: p.buys, sells: p.sells, tok: p.tok, dev: p.dev, first: p.first, last: p.last }))
+        .sort((a, b) => b.n - a.n || b.buys - a.buys);
+      const fMin = o.farmMin || 10, fSlots = o.farmSlots || 150;
+      const fp = prints.find((p) => p.n >= fMin && p.last - p.first <= fSlots);
+      const fs = new Set(fp ? fp.wallets : []);
+      const devEv = trades.filter((e) => e.w === dev), devSells = devEv.filter((e) => e.side === 'sell');
+      const devIn = (c.tok > 0 ? c.tok : 0) + devEv.filter((e) => e.side === 'buy').reduce((a, e) => a + e.tok, 0);
+      const devOut = devSells.reduce((a, e) => a - e.tok, 0);
+      const farm = fp ? { print: fp.print, text: printText(fp.print), routers: fp.routers, n: fp.n, buys: fp.buys, tok: fp.tok, pct: (fp.tok / supply) * 100, first: fp.first, last: fp.last, wallets: fp.wallets } : null;
+      const devInto = farm ? devSells.filter((e) => rel(e) >= farm.first && rel(e) <= farm.last + 5).length : 0;
+      const devShares = !!farm && devSells.some((e) => e.print === farm.print);
+      const snip = trades.filter((e) => rel(e) === 0 && e.side === 'buy' && e.w !== dev && !fs.has(e.w));
+      const outside = trades.filter((e) => e.side === 'buy' && e.w !== dev && !fs.has(e.w)).reduce((a, e) => a + Math.max(0, e.sol), 0);
+      const lane = (e) => (e.w === dev ? 'dev' : fs.has(e.w) ? 'farm' : snip.some((x) => x.w === e.w) ? 'sniper' : 'out');
+      return {
+        ok: true, mint, s0, t0: c.t, dev, pool: c.pool, supply, n: ev.length,
+        devBuyPct: (devIn / supply) * 100, devLeftPct: (Math.max(0, devIn - devOut) / supply) * 100,
+        devSells: devSells.map((e) => ({ rel: rel(e), tok: -e.tok, print: e.print })), devShares, devInto, farm,
+        prints: prints.slice(0, 6).map((p) => ({ print: p.print, text: printText(p.print), n: p.n, buys: p.buys, sells: p.sells, dev: p.dev })),
+        snipers: snip.map((e) => ({ w: e.w, tok: e.tok, sol: e.sol })), outside,
+        events: [{ rel: 0, w: dev, side: 'buy', tok: c.tok, lane: 'dev' }].concat(trades.map((e) => ({ rel: rel(e), w: e.w, side: e.side, tok: Math.abs(e.tok), lane: lane(e) }))),
+        lastRel: trades.length ? rel(trades[trades.length - 1]) : 0,
+      };
+    }
+    // SOL outside buyers put in, from Trojan's wallet rows (when the transactions read don't cover the whole launch)
+    function outsideSol(rows, scan) {
+      const skip = new Set([].concat(scan && scan.dev ? [scan.dev] : [], scan && scan.farm ? scan.farm.wallets : []));
+      return (rows || []).filter((r) => r && r.walletAddress && !skip.has(r.walletAddress) && !isPoolRow(r)).reduce((a, r) => a + (num(r.amountNativeSpent) || 0), 0);
+    }
+    // the round SOL total a launcher's Sniper Guard is likely set at, crossed by our buy
+    function nukeRisk(outside, buy, lines) {
+      const L = (lines || [1, 2, 5, 10]).map(Number).filter((x) => x > 0).sort((a, b) => a - b), o = Math.max(0, num(outside) || 0), b = Math.max(0, num(buy) || 0);
+      return { outside: o, buy: b, lines: L, line: L.find((l) => o < l && o + b >= l) || null, max: Math.max(L[L.length - 1] || 10, o + b) };
+    }
+    const GUARD_W = { farm: 35, devstep: 30, busy: 15, seen: 20, flagged: 25, nuke: 10, out: 6, funder: 6, devrec: 8 };
+    const GUARD_ON = { farm: true, devstep: true, busy: true, seen: true, flagged: true, nuke: true, out: true, funder: true, devrec: false };
+    // inp: { scan, sum (bundleSummary), rows (Trojan wallet rows), buySol, ageMin, outsideSol, busy {n, of}, mem {farms:[{wallets, coins}], devs:{addr:{flag}}}, migr {m, n} }
+    // cfg: { w, on, lines, nukeMin, caution, block } → { score, level clear|caution|block, checks:[{id, tag FAIL|WARN|INFO, name, detail, pts}], nuke, head }
+    function guardScore(inp, cfg) {
+      inp = inp || {}; cfg = cfg || {};
+      const W = Object.assign({}, GUARD_W, cfg.w || {}), ON = Object.assign({}, GUARD_ON, cfg.on || {}), S = inp.scan && inp.scan.ok ? inp.scan : null, out = [];
+      const add = (id, tag, name, detail, pts) => { if (ON[id] !== false) out.push({ id, tag, name, detail, pts: tag === 'INFO' ? 0 : Math.round(pts) }); };
+      const F = S && S.farm, pct = (x) => (x >= 10 ? x.toFixed(0) : x.toFixed(1)) + '%';
+      if (F) {
+        const strong = S.devShares || !F.routers.length;
+        add('farm', strong ? 'FAIL' : 'WARN', 'Farm stream', `${F.n} wallets bought ${F.buys}× between slot +${F.first} and +${F.last}, one transaction shape (${F.text})${strong ? '' : ' · may be a terminal default'}`, strong ? W.farm : W.farm / 2);
+      }
+      if (S && S.devSells.length) {
+        if (F && (S.devInto >= 2 || S.devShares)) add('devstep', 'FAIL', 'Dev sells into it', `${S.devSells.length} dev sells while the farm bought, ${pct(S.devBuyPct)} → ${pct(S.devLeftPct)}${S.devShares ? ', same shape as the farm' : ''}`, W.devstep);
+        else if (S.devBuyPct >= 5 && S.devLeftPct < S.devBuyPct / 2) add('devstep', 'WARN', 'Dev selling', `dev sold ${pct(S.devBuyPct - S.devLeftPct)} of its ${pct(S.devBuyPct)} in ${S.devSells.length} sells`, W.devstep / 2);
+      }
+      const B = inp.busy;
+      if (B && B.of) {
+        if (B.n >= 3 || (B.n >= 2 && B.n === B.of)) add('busy', 'FAIL', 'Reused farm wallets', `${B.n} of ${B.of} farm wallets checked made 1,000+ transactions in the 4 days before`, W.busy);
+        else if (B.n >= 1) add('busy', 'WARN', 'Busy farm wallets', `${B.n} of ${B.of} farm wallets checked made 1,000+ transactions in the 4 days before`, W.busy / 2);
+      }
+      const M = inp.mem || {};
+      if (S) {
+        const ws = new Set([].concat(F ? F.wallets : [], S.snipers.map((x) => x.w)));
+        const hit = (M.farms || []).map((f) => ({ f, k: (f.wallets || []).filter((w) => ws.has(w)).length })).filter((x) => x.k >= 3).sort((a, b) => b.k - a.k)[0];
+        if (hit) add('seen', 'FAIL', 'Farm seen before', `${hit.k} wallets of a farm you saved${hit.f.coins && hit.f.coins.length ? ' (' + hit.f.coins.slice(-3).join(', ') + ')' : ''}`, W.seen);
+        const dv = (M.devs || {})[S.dev];
+        if (dv && dv.flag) add('flagged', 'FAIL', 'Flagged dev', `you flagged ${S.dev.slice(0, 4)}…${S.dev.slice(-4)}${dv.coins && dv.coins.length ? ' (' + dv.coins.slice(-3).join(', ') + ')' : ''}`, W.flagged);
+      }
+      let nk = null;
+      const outS = inp.outsideSol != null ? inp.outsideSol : S ? S.outside : null;
+      if (outS != null && num(inp.buySol) > 0 && (inp.ageMin == null || inp.ageMin <= (cfg.nukeMin || 10))) {
+        nk = nukeRisk(outS, inp.buySol, cfg.lines);
+        if (nk.line) add('nuke', 'WARN', 'Nuke risk', `your ◎ ${nk.buy} takes outside buying from ◎ ${nk.outside.toFixed(2)} past ${nk.line} ◎, a common Sniper Guard line`, W.nuke);
+      }
+      const Su = inp.sum;
+      if (Su && Su.peak >= 5 && Su.held < 1) add('out', 'WARN', 'Bundles already out', `bundles bought ${pct(Su.peak)} and hold ${pct(Su.held)}`, W.out);
+      if (inp.rows) {
+        const g = clusterize(inp.rows.filter((r) => !isPoolRow(r)).slice(0, 30)).filter((x) => !x.hot)[0];
+        if (g) add('funder', 'WARN', 'Shared funder', `${g.n} top holders funded by ${g.id.slice(0, 4)}…${g.id.slice(-4)}${g.fundAmt ? ', ' + g.fundAmt + ' ◎ each' : ''} · ${pct(g.pct)} of supply`, W.funder);
+      }
+      const R = inp.migr;
+      if (R && R.n > 0) {
+        if (R.n >= 5 && R.m / R.n < 0.1) add('devrec', 'WARN', 'Dev record', `${R.m} of ${R.n} launches migrated`, W.devrec);
+        else add('devrec', 'INFO', 'Dev record', `${R.n} launches · ${R.m} migrated`, 0);
+      }
+      if (!S) out.push({ id: 'noscan', tag: 'INFO', name: 'Launch not read', detail: inp.scanWhy || 'no transactions read yet: Trojan data only', pts: 0 });
+      const score = Math.min(100, out.reduce((a, x) => a + x.pts, 0)), cau = num(cfg.caution) || 30, blk = num(cfg.block) || 60;
+      const level = score >= blk ? 'block' : score >= cau ? 'caution' : 'clear';
+      const has = (id, tag) => out.some((x) => x.id === id && (!tag || x.tag === tag));
+      const head = has('farm', 'FAIL') && has('devstep', 'FAIL') ? 'Launch-tool dump pattern' : has('farm', 'FAIL') ? 'Farm wallets are buying it' : has('seen') ? 'A farm you saved is here'
+        : has('flagged') ? 'A dev you flagged' : has('devstep') ? 'The dev is selling' : has('nuke') ? 'Your buy may trigger a dump' : level === 'clear' ? 'Nothing found' : (out.find((x) => x.pts) || { name: 'Caution' }).name;
+      const sub = has('farm', 'FAIL') && has('devstep', 'FAIL') ? `One tool bought from ${F.n} wallets while it sold the dev's ${pct(S.devBuyPct)}.` : level === 'clear' ? 'No launch-tool pattern in what was read.' : '';
+      return { score, level, checks: out.sort((a, b) => b.pts - a.pts), nuke: nk, head, sub };
+    }
     const siteFor = (hostname) => SITES.find((x) => x.host.test(String(hostname || ''))) || null;
     // tick source → label ('ag' or a site id)
     const srcName = (src) => (src === 'ag' ? 'AG' : (SITES.find((x) => x.id === src) || { name: String(src || '?') }).name);
@@ -568,7 +722,8 @@
       buyLegs, scaleLegs, rng, matchFlows, bagCost, costOf, soldOf, avgEntry, metric, metricsOf, firstOf, riskLevel, flowOf, PROFILE_KEYS, profileChips, tradeRows,
       sigTime, newSignal, agPathAllowed, relayMode, authExpired, healthLevel, agBus, SITES, siteFor, srcName,
       riskScore, matchOf, mergeMatches, matchesLive, FILTER_MODES, filterAction, nativeDue,
-      trojanBundles, trojanMeta, isPoolRow, clusterize, BUNDLE_MAX, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, ruleText };
+      trojanBundles, trojanMeta, isPoolRow, clusterize, BUNDLE_MAX, bundleSummary, bundlePoint, pushPoint, bundleMatches, BUNDLE_WHEN, ruleText,
+      GUARD_COMMON, JITO_TIPS, txParse, printText, launchScan, outsideSol, nukeRisk, GUARD_W, GUARD_ON, guardScore };
   })();
   // Node (unit tests) gets the core and stops here. In Tampermonkey there is no `module`.
   if (typeof module === 'object' && module && module.exports && typeof window === 'undefined') { module.exports = Core; return; }
@@ -764,6 +919,7 @@
       stratId: null,     // exit strategy attached to buys (null = none)
       hotkeys: 'hover',  // 'on' | 'hover' (only while the pointer is over the widget) | 'off'
       kbHints: true,
+      guard: null,       // Buy Guard (Trojan): see GUARD_DEF
       bund: { open: true, view: 'list', rules: [], watch: [], bg: true, group: 'trojan' }, // group: trojan (Trojan's own bundles) | funder (same first funder) · Trojan bundles panel, rules, watched funders
       intel: { on: false, open: true }, // AG Intel panel docked to the widget on coin pages (off by default; ⚙ → AG Intel)
       bar: true,         // holdings bar at the top of the page
@@ -795,6 +951,12 @@
     st.safety = Object.assign({ maxPerCoin: 0, dailyLoss: 0, impactWarn: 10, dupSec: 3 }, st.safety || {});
     st.filter = Object.assign({ mode: 'smart', native: false, after: 10 }, st.filter || {});
     st.bund = Object.assign({ open: true, view: 'list', rules: [], watch: [], bg: true }, st.bund || {});
+    { // Buy Guard settings: act warn|shrink|block · timeout have|shrink|block · w / ck = weight / on per check (Core.GUARD_W / GUARD_ON)
+      const G = Object.assign({ on: true, act: 'shrink', caution: 30, block: 60, shrinkSol: 0.05, waitMs: 1500, timeout: 'have', rpc: 'https://api.mainnet-beta.solana.com',
+        lines: '1, 2, 5, 10', manual: true, rules: true, paper: false, cardScan: true, cardAct: 'dim' }, st.guard || {});
+      G.w = Object.assign({}, Core.GUARD_W, G.w || {}); G.ck = Object.assign({}, Core.GUARD_ON, G.ck || {});
+      st.guard = G;
+    }
     if (!Array.isArray(st.bund.rules)) st.bund.rules = [];
     if (!Array.isArray(st.bund.watch)) st.bund.watch = [];
     if (!st.barHide || typeof st.barHide !== 'object') st.barHide = {};
@@ -1182,6 +1344,11 @@
       if (!legs.length) { const m = `no selected wallet can cover it (+${st.reserve} SOL reserve) · ${skipped.join(', ')}`; if (interactive) toast('Buy: ' + m, true); return { ok: 0, err: m }; }
       let total = +legs.reduce((a, x) => a + x.amt, 0).toFixed(6);
       const name = symb || (mint === getMint() ? sym : '') || tail(mint);
+      // Buy Guard (Trojan): may cancel, shrink or ask first
+      const gv = await guardGate({ mint, name, legs, total, mode, interactive: !!interactive, src: interactive ? 'manual' : 'rules' });
+      if (!gv.go) { if (interactive && gv.err && !/cancelled/.test(gv.err)) toast(gv.err, true); return { ok: 0, err: gv.err }; }
+      if (gv.legs) { legs = gv.legs; total = gv.total; }
+      const guarded = !!gv.asked;
       // rails
       const warn = [];
       let room = null, locked = false, dup = false;
@@ -1196,7 +1363,7 @@
         if (locked) return { ok: 0, err: 'daily loss limit hit' };
         if (dup) return { ok: 0, err: 'bought this coin moments ago' };
         if (room != null && total > room + 1e-9) { if (room <= 0.001) return { ok: 0, err: 'per-coin cap reached' }; legs = scaleLegs(legs, room); total = +legs.reduce((a, x) => a + x.amt, 0).toFixed(6); }
-      } else if (live && (total > Number(st.confirmAbove || 0) || warn.length || impHot)) {
+      } else if (live && ((total > Number(st.confirmAbove || 0) && !guarded) || warn.length || impHot)) {
         const acts = [{ label: 'Cancel', v: null, kind: 'ghost' }];
         if (room != null && room > 0.001 && total > room && !locked) acts.push({ label: `Buy ${sol(room)} ◎`, v: 'room', kind: 'ok' });
         acts.push(warn.length || impHot ? { label: impHot && !warn.length ? `Buy anyway · ${sol(total)} ◎` : 'Override', v: 'go', kind: 'danger' } : { label: `Buy ${sol(total)} ◎`, v: 'go', kind: 'pri' });
@@ -2131,6 +2298,33 @@
     #agtw .mdl{position:absolute;inset:0;z-index:20;background:#0009;border-radius:inherit;display:flex;align-items:flex-start;justify-content:center;padding:60px 12px 12px}
     #agtw .mbox{width:100%;background:#1C1F25;border:1px solid var(--ln);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px;box-shadow:0 18px 50px #000c;user-select:text}
     #agtw .mbox.warn{border-color:#5C2A33}#agtw .mbox.live{border-color:#7A3434}
+    #agtw .mdl:has(.gbox){padding-top:24px;overflow:auto}
+    #agtw .mbox.gbox.block{border-color:#B9505F}#agtw .mbox.gbox.caution{border-color:#5A4A1C}#agtw .mbox.gbox .mic{background:#221A3A;color:#D2C5FF}
+    #agtw .ghero{display:flex;gap:10px;align-items:center;border-radius:12px;padding:9px 10px;border:1px solid var(--ln);background:#1C1F25}
+    #agtw .ghero.bad{background:#2A1418;border-color:#5C2A33}#agtw .ghero.mid{background:#2A2412;border-color:#5A4A1C}#agtw .ghero.ok{background:#13261C;border-color:#24563C}
+    #agtw .ghero .bring{width:46px;height:46px;border-radius:46px;border:4px solid #3A3F48;box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex:none}
+    #agtw .ghero.bad .bring{border-color:#D9536A;color:#FFC2C2}#agtw .ghero.mid .bring{border-color:#F2B84B;color:#FFE08A}#agtw .ghero.ok .bring{border-color:#4FAF7D;color:#CFF7E1}
+    #agtw .ghero .ih{display:flex;flex-direction:column;gap:3px;min-width:0}#agtw .ghero.bad .ih b{color:var(--sell)}#agtw .ghero.mid .ih b{color:#FFE08A}#agtw .ghero.ok .ih b{color:var(--buy)}
+    #agtw .gtg{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.05em;border-radius:5px;padding:1px 5px;background:var(--ln2);color:#C9CDD4;text-align:center;flex:none}
+    #agtw .gtg.bad{background:#5C1414;color:#FFC2C2}#agtw .gtg.mid{background:#2A2412;color:#FFE08A}#agtw .gtg.ok{background:#163126;color:#8FE6B4}
+    #agtw .gck{display:flex;flex-direction:column}#agtw .gcr{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid #1F2228}#agtw .gcr .gtg{width:36px;margin-top:1px}#agtw .gck .gcr:first-child{border-top:0}
+    #agtw .gbox .ma{position:sticky;bottom:0;background:#1C1F25;padding:8px 0 4px;margin-top:-4px;z-index:1}
+    #agtw .gcb{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}#agtw .gcb small{font-size:10.5px;line-height:1.35}
+    #agtw .y{color:#FFE08A}
+    #agtw .gnk{background:#111316;border:1px solid #24272E;border-radius:10px;padding:8px 9px;display:flex;flex-direction:column;gap:5px}
+    #agtw .gbar{position:relative;height:9px;border-radius:5px;background:#24272E}#agtw .gbar i{position:absolute;top:0;height:9px}#agtw .gbar i.o{left:0;background:#8B919C;border-radius:5px 0 0 5px}#agtw .gbar i.b{background:#FFE08A}
+    #agtw .gbar em{position:absolute;top:-3px;width:1px;height:15px;background:#6E7480}#agtw .gbar em.hit{width:2px;background:#D9536A}
+    #agtw .gwy{align-self:flex-start}
+    #agtw .gln{display:flex;flex-direction:column;gap:0}#agtw .gtk{position:relative;height:14px;margin-left:70px;margin-right:8px;font-size:9.5px;color:#6E7480}#agtw .gtk span{position:absolute;transform:translateX(-50%)}
+    #agtw .glr{display:flex;align-items:center;height:42px;border-top:1px solid #1F2228}#agtw .gll{width:70px;flex:none;display:flex;flex-direction:column;font-size:11px}#agtw .gll small{font-size:9.5px}
+    #agtw .gld{position:relative;flex:1;height:42px;margin-right:8px}#agtw .gld i{position:absolute;border-radius:50%;transform:translate(-50%,-50%);box-sizing:border-box}
+    #agtw .gpr{display:flex;flex-direction:column;gap:4px}#agtw .gpr>div{display:flex;align-items:center;gap:8px;background:#1C1F25;border:1px solid var(--ln);border-radius:8px;padding:5px 8px;font-size:10.5px}
+    #agtw .gpr>div.f{background:#221A3A;border-color:#5B47A8}#agtw .gpr>div>span:first-child{flex:1}
+    #agtw .gdv{display:flex;align-items:flex-end;gap:3px;height:58px}#agtw .gdv>span{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}#agtw .gdv i{width:100%;background:#F59AA6;border-radius:3px 3px 0 0}#agtw .gdv small{font-size:9px}
+    #agtw .btn.warnb{border-color:#5A4A1C;background:#2A2412;color:#FFE08A}
+    #agtw .btn.hold{position:relative;overflow:hidden}#agtw .btn.hold::before{content:'';position:absolute;inset:0;width:0;background:#B9505F55}#agtw .btn.hold.holding::before{width:100%;transition:width 2s linear}#agtw .btn.hold span{position:relative}
+    #agtw .ib.gdb .n{font-size:10px;margin-left:2px}#agtw .ib.gdb.block{color:#FFC2C2;border-color:#B9505F}#agtw .ib.gdb.caution{color:#FFE08A;border-color:#5A4A1C}#agtw .ib.gdb.clear{color:#8FE6B4}
+    #agtw .gws{display:grid;grid-template-columns:minmax(0,1fr) 64px;gap:4px 8px;align-items:center}
     #agtw .mh{display:flex;align-items:center;gap:9px}
     #agtw .mic{width:28px;height:28px;border-radius:8px;background:#3A1A10;color:var(--warn);display:flex;align-items:center;justify-content:center;flex:none}
     #agtw .mbox.live .mic{background:#3A1717;color:#FFC2C2}
@@ -2461,6 +2655,7 @@
         }
       } finally { nativeBusy = false; }
     }
+    const el0Rect = (x) => { try { return x.getBoundingClientRect(); } catch (_) { return null; } };
     function scanCards() {
       if (env === 'ag' || document.hidden) return;
       const seen = new Set(), hidden = new Set(st.hiddenCoins || []), vh = window.innerHeight, now = Date.now(), live = agLive(), F = st.filter;
@@ -2477,14 +2672,16 @@
         if (!mint) continue;
         const cur = mint === getMint(), m = agMatch(mint), manual = hidden.has(mint) && !cur;
         if (!firstSeen.has(mint)) firstSeen.set(mint, now);
-        const act = Core.filterAction(F.mode, live, !!m, cur);
-        setHidden(row, manual || act === 'hide');
-        if (row.classList.contains('agtw-dim') !== (act === 'dim')) row.classList.toggle('agtw-dim', act === 'dim');
+        const act = Core.filterAction(F.mode, live, !!m, cur), gb = !cur && gdBlocked(mint);
+        if (GD && st.guard.on && st.guard.cardScan) { const r0 = el0Rect(row); if (r0 && r0.bottom > 0 && r0.top < vh) gdWant(mint); }
+        setHidden(row, manual || act === 'hide' || (gb && st.guard.cardAct === 'hide'));
+        const dimIt = act === 'dim' || (gb && st.guard.cardAct === 'dim');
+        if (row.classList.contains('agtw-dim') !== dimIt) row.classList.toggle('agtw-dim', dimIt);
         if (m) nM++; else if (act !== 'show') nH++;
         if (site.nativeHide && Core.nativeDue(F, live, !!m, firstSeen.get(mint), now)) queueNative(mint);
         if (manual) { watchHidden(mint); continue; }
         if (act === 'hide') continue;
-        const ag = (m && F.mode !== 'off' ? agChip(mint, m) : '') + tbBadge(mint) + tbCardChip(mint);
+        const ag = (m && F.mode !== 'off' ? agChip(mint, m) : '') + tbBadge(mint) + tbCardChip(mint) + gdChip(mint);
         if (!st.cards) { // overlay off: only the AG badge (if any)
           const c0 = hostEl.querySelector(':scope > .agtw-c');
           hostEl.classList.remove('agtw-held', 'agtw-dev', 'agtw-sig');
@@ -2551,6 +2748,9 @@
         .agtw-c .am{background:#a3e635;border:1px solid #a3e635;color:#0d1117;border-radius:5px;padding:0 5px;font:700 10px/1.5 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
         .agtw-c .am.y{background:#fbbf24;border-color:#fbbf24}.agtw-c .am.r{background:#f87171;border-color:#f87171}
         .agtw-dim{opacity:.22;filter:grayscale(1);transition:opacity .15s}.agtw-dim:hover{opacity:.8}
+        .agtw-c .tbc,.agtw-c .tbd,.agtw-c .gdc{border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em;white-space:nowrap;border:1px solid #3A3F48;background:#24272E;color:#C9CDD4}
+        .agtw-c .tbc.high,.agtw-c .tbd,.agtw-c .gdc.block{background:#5C1414;border-color:#B9505F;color:#FFC2C2}.agtw-c .tbc.mid,.agtw-c .gdc.caution{background:#2A2412;border-color:#5A4A1C;color:#FFE08A}
+        .agtw-c .tbc.low,.agtw-c .gdc.clear{background:#163126;border-color:#24563C;color:#8FE6B4}
         .agtw-c .sg{background:#B8F04A;border:1px solid #B8F04A;color:#15180F;border-radius:5px;padding:0 5px;font-weight:700;letter-spacing:.04em}
         .agtw-peek{position:fixed;right:auto;bottom:auto;z-index:100003;width:280px;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:8px;background:#1C1F25;border:1px solid #4E6420;border-radius:12px;padding:10px;color:#E6E8EC;box-shadow:0 18px 44px #000c;display:none;font:500 11.5px/1.35 'IBM Plex Sans',Inter,system-ui,sans-serif}
         .agtw-peek .sh{display:flex;align-items:center;gap:6px}.agtw-peek .sp{flex:1}
@@ -2729,6 +2929,7 @@
       tbBusy = true;
       try {
         const cur = getMint(), now = Date.now();
+        if (cur && st.guard.on && !document.hidden) guardScan(cur); // Buy Guard: read the launch before you press Buy
         // the coin on screen: Trojan normally asks itself; if it hasn't for 8s, ask for it
         if (cur && !document.hidden && (!bsnap[cur] || now - (bsnap[cur].bpAt || 0) > 8000)) await tbGet(cur);
         else if (cur && bsnap[cur] && bsnap[cur].wait) tbCompute(cur, bsnap[cur], true); // Trojan's table may have appeared meanwhile
@@ -2892,11 +3093,12 @@
       const mint = getMint(), s = mint && bsnap[mint], B = st.bund, on = B.rules.filter((r) => r.on).length;
       if (!B.open) return `<button class="intel tab bund" data-a="bund" title="Show bundles"><span class="agt v">BUNDLES</span>${s ? `<b class="n">${s.sum.held.toFixed(0)}%</b><i class="dot" style="background:${s.sum.level === 'high' ? '#F59AA6' : s.sum.level === 'mid' ? '#FFE08A' : '#8FE6B4'}"></i>` : ''}</button>`;
       const c = s && ui.bundSel ? s.cl.find((x) => x.id === ui.bundSel) : null;
-      const body = B.view === 'rules' ? bundRulesHtml(mint)
+      const body = B.view === 'guard' ? guardViewHtml(mint) : B.view === 'rules' ? bundRulesHtml(mint)
         : !mint ? `<div class="mut sm">Open a coin: bundles come from Trojan's holders list.</div>${loadFeed().length ? '<button class="btn" data-a="bview">Rules & feed ›</button>' : ''}`
         : !s || s.wait || !s.cl ? `<div class="mut sm">Waiting for Trojan's holders data… If nothing comes, open this coin's Holders tab once.</div>`
         : c ? bundClusterHtml(mint, s, c) : bundListHtml(mint, s);
       return `<div class="intel bund"><div class="ii"><div class="sh ihd"><span class="agt">BUNDLES</span><b>${escH(mint ? sym || tail(mint) : '')}</b><span class="sp"></span>${s ? `<span class="lvd"></span><span class="mut n sm">${agoS(Date.now() - s.at)}</span>` : ''}
+        ${st.guard.on ? (() => { const gr = mint ? gdCard(mint) : null; return `<button class="ib gdb ${gr ? gr.level : ''} ${B.view === 'guard' ? 'on' : ''}" data-a="gview" title="Buy Guard${gr && gr.head ? ': ' + escH(gr.head) : ''}">${ICON.shield}<span class="n">${gr && gr.score != null ? gr.score : ''}</span></button>`; })() : ''}
         <button class="ib ord ${on ? 'has' : ''} ${B.view === 'rules' ? 'on' : ''}" data-a="bview" title="Bundle rules">${ICON.bolt}<span class="n">${on || ''}</span></button><button class="ib" data-a="bund" title="Collapse">${ICON.chev}</button></div>${body}</div></div>`;
     }
     function tbBadge(mint) { // holdings bar / cards: a bundle just dumped on this coin
@@ -2908,6 +3110,254 @@
       const s = TB && bsnap[mint];
       if (!s || Date.now() - s.at > 10 * 60e3 || !s.sum.clusters) return '';
       return `<span class="tbc ${s.sum.level}" title="${s.sum.clusters} bundles hold ${s.sum.held.toFixed(1)}% · risk ${s.sum.risk}">BUNDLES ${s.sum.held.toFixed(0)}%</span>`;
+    }
+
+
+    // ---------------------------------------------------------- Buy Guard (Trojan tabs only)
+    // Before a buy leaves the widget (buttons, Trenches ⚡, dip / DCA orders, bundle rules) the coin is scored
+    // (Core.guardScore) from Trojan's holders data and the coin's first transactions read over Solana RPC
+    // (Core.launchScan). Clear → buy. Caution → shrink (or ask). Block → cancel, with a hold-to-override.
+    const GD = TB, GD_TX = 60;
+    const gScan = {}; // mint → { st: run|ok|old|err, at, scan, busy, why, p }
+    const gdLines = () => String(st.guard.lines || '').split(/[\s,;]+/).map(Number).filter((x) => x > 0);
+    const gdCfg = () => ({ w: st.guard.w, on: st.guard.ck, lines: gdLines(), caution: st.guard.caution, block: st.guard.block, nukeMin: 10 });
+    const gdMem = () => Object.assign({ farms: [], devs: {} }, GM_getValue('gdMem', {}) || {});
+    const gdLog = () => (GM_getValue('gdLog', []) || []).filter((x) => Date.now() - x.at < 2 * 86400e3);
+    function gdLogAdd(e) { const l = gdLog(); l.push(Object.assign({ at: Date.now() }, e)); GM_setValue('gdLog', l.slice(-60)); }
+    const gdSkip = {}; // mint → until: orders / rules skip a coin you blocked
+    // RPC: at most 3 requests at a time, retried on 429 / network errors
+    let rpcN = 0, rpcBatch = null;
+    const rpcQ = [];
+    const rpcSlot = () => new Promise((r) => { if (rpcN < 3) { rpcN++; r(); } else rpcQ.push(r); });
+    const rpcFree = () => { const n = rpcQ.shift(); if (n) n(); else rpcN--; };
+    function rpcRaw(body) {
+      return new Promise((res) => {
+        try {
+          GM_xmlhttpRequest({ method: 'POST', url: st.guard.rpc, headers: { 'content-type': 'application/json' }, data: JSON.stringify(body), timeout: 15000,
+            onload: (r) => { let j = null; try { j = JSON.parse(r.responseText); } catch (_) {} res({ s: r.status, j }); }, onerror: () => res({ s: 0 }), ontimeout: () => res({ s: 0 }) });
+        } catch (_) { res({ s: 0 }); }
+      });
+    }
+    async function rpc(method, params) {
+      for (let i = 0; i < 4; i++) {
+        await rpcSlot();
+        const r = await rpcRaw({ jsonrpc: '2.0', id: 1, method, params });
+        rpcFree();
+        if (r.s === 200 && r.j && 'result' in r.j) return r.j.result;
+        if (r.s === 429 || r.s === 0 || r.s >= 500) { await sleep(700 * (i + 1)); continue; }
+        return null;
+      }
+      return null;
+    }
+    async function rpcTxs(sigs) {
+      const out = new Array(sigs.length).fill(null), P = { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' };
+      for (let i = 0; i < sigs.length; i += 10) {
+        const part = sigs.slice(i, i + 10);
+        let done = false;
+        if (rpcBatch !== false) {
+          await rpcSlot();
+          const r = await rpcRaw(part.map((s, k) => ({ jsonrpc: '2.0', id: k, method: 'getTransaction', params: [s, P] })));
+          rpcFree();
+          if (r.s === 200 && Array.isArray(r.j)) { rpcBatch = true; for (const x of r.j) if (x && x.result && x.id >= 0 && x.id < part.length) out[i + x.id] = x.result; done = true; }
+          else if (r.s && r.s !== 429 && r.s < 500) rpcBatch = false; // this RPC doesn't take batches
+        }
+        if (!done) await Promise.all(part.map(async (s, k) => { out[i + k] = await rpc('getTransaction', [s, P]); }));
+      }
+      return out;
+    }
+    async function gdBusy(ws, t0) { // farm wallets that made 1,000+ transactions in the 4 days before the launch
+      let n = 0, of = 0;
+      for (const w of ws) {
+        const r = await rpc('getSignaturesForAddress', [w, { limit: 1000 }]);
+        if (!Array.isArray(r)) continue;
+        of++;
+        const old = r[r.length - 1];
+        if (r.length >= 1000 && old && old.blockTime && t0 && old.blockTime > t0 - 4 * 86400) n++;
+      }
+      return { n, of };
+    }
+    // lite (Trenches cards): skips the farm-wallet history (5 extra calls); the coin you open gets it topped up
+    function guardScan(mint, force, lite) {
+      const g = gScan[mint], now = Date.now();
+      if (!force && g && !lite && g.st === 'ok' && g.lite && g.scan.farm && !g.busyP && st.guard.ck.busy !== false) {
+        g.busyP = gdBusy(g.scan.farm.wallets.slice(0, 5), g.scan.t0).then((b) => { g.busy = b; g.lite = false; delete gdCache[mint]; render(); scanCardsSoon(); });
+        return g.p;
+      }
+      if (!force && g && (g.st === 'run' || now - g.at < (g.st === 'err' ? 60e3 : g.st === 'old' ? 3600e3 : 10 * 60e3))) return g.p || Promise.resolve(g);
+      const o = gScan[mint] = { st: 'run', at: now, lite: !!lite };
+      o.p = (async () => {
+        try {
+          let sigs = [], before = null;
+          for (let pg = 0; ; pg++) {
+            const r = await rpc('getSignaturesForAddress', [mint, Object.assign({ limit: 1000 }, before ? { before } : {})]);
+            if (!Array.isArray(r)) throw new Error('RPC did not answer (check the RPC address in ⚙ → Buy Guard)');
+            sigs = sigs.concat(r);
+            if (r.length < 1000) break;
+            if (pg >= 2) { o.st = 'old'; o.why = 'older coin (3,000+ transactions): Trojan data only'; return o; }
+            before = r[r.length - 1].signature;
+          }
+          const first = sigs.filter((x) => x && !x.err).reverse().slice(0, GD_TX);
+          const txs = await rpcTxs(first.map((x) => x.signature));
+          txs.forEach((t, k) => { if (t && t.slot == null) t.slot = first[k].slot; });
+          const scan = Core.launchScan(txs.filter(Boolean), mint);
+          if (!scan.ok) { o.st = 'err'; o.why = scan.why; return o; }
+          scan.total = sigs.length; scan.complete = sigs.length <= GD_TX;
+          o.scan = scan;
+          if (scan.farm && st.guard.ck.busy !== false && !lite) o.busy = await gdBusy(scan.farm.wallets.slice(0, 5), scan.t0);
+          o.st = 'ok';
+          const M = gdMem(); // a saved farm / flagged dev seen again: remember where
+          let ch = false;
+          const name = (heldAll[mint] || {}).sym || (mint === getMint() ? sym : '') || shortA(mint);
+          for (const f of M.farms) if (scan.farm && f.wallets.filter((w) => scan.farm.wallets.includes(w)).length >= 3 && !f.coins.includes(name)) { f.coins.push(name); f.coins = f.coins.slice(-8); ch = true; }
+          if (M.devs[scan.dev] && !(M.devs[scan.dev].coins || []).includes(name)) { M.devs[scan.dev].coins = (M.devs[scan.dev].coins || []).concat(name).slice(-8); ch = true; }
+          if (ch) GM_setValue('gdMem', M);
+        } catch (e) { o.st = 'err'; o.why = String((e && e.message) || e); }
+        finally { o.at = Date.now(); delete gdCache[mint]; render(); scanCardsSoon(); }
+        return o;
+      })();
+      return o.p;
+    }
+    let migr = { at: 0, mint: null, v: null };
+    function readMigr() { // Trojan's Security Audit: "Dev Migrations 21/33" (page text: read at most every 10s)
+      const mint = getMint();
+      if (migr.mint === mint && Date.now() - migr.at < 10000) return migr.v;
+      let v = null;
+      try { const m = (document.body.innerText || '').match(/Dev Migrations\s*(\d+)\s*\/\s*(\d+)/); v = m ? { m: Number(m[1]), n: Number(m[2]) } : null; } catch (_) {}
+      migr = { at: Date.now(), mint, v };
+      return v;
+    }
+    function guardEval(mint, buySol) {
+      const g = gScan[mint], s = bsnap[mint], now = Date.now(), scan = g && g.st === 'ok' ? g.scan : null;
+      const rows = s && s.pos && now - (s.posAt || 0) < 120000 ? s.pos : null, sum = s && s.sum && now - (s.at || 0) < 120000 ? s.sum : null;
+      const ageMin = scan && scan.t0 ? (now / 1000 - scan.t0) / 60 : null;
+      const outS = scan && scan.complete ? scan.outside : rows ? Core.outsideSol(rows, scan) : null;
+      const r = Core.guardScore({ scan, rows, sum, buySol, ageMin, outsideSol: outS, busy: g && g.busy, mem: gdMem(), migr: mint === getMint() ? readMigr() : null,
+        scanWhy: !g ? 'not read yet' : g.st === 'run' ? 'still reading the launch…' : g.why }, gdCfg());
+      r.scan = scan; r.g = g;
+      return r;
+    }
+    const gdCache = {}; // cards: mint → { at, r }
+    function gdCard(mint) {
+      const g = gScan[mint];
+      if (!g) return null;
+      if (g.st === 'run') return { level: 'run' };
+      const c = gdCache[mint];
+      if (c && Date.now() - c.at < 20000) return c.r;
+      const r = guardEval(mint, Number(st.qb) || 0.1);
+      gdCache[mint] = { at: Date.now(), r };
+      return r;
+    }
+    const gdApplies = (src, mode) => GD && st.guard.on && (mode === 'live' || st.guard.paper) && (src === 'manual' ? st.guard.manual : st.guard.rules);
+    // → { go: true, legs?, total? } or { go: false, err }
+    async function guardGate({ mint, name, legs, total, mode, interactive, src }) {
+      if (!gdApplies(src, mode)) return { go: true };
+      if (!interactive && gdSkip[mint] > Date.now()) return { go: false, err: 'buy guard: you blocked this coin' };
+      const p = guardScan(mint);
+      const g0 = gScan[mint];
+      if (g0 && g0.st === 'run') {
+        if (interactive) { ui.busy = 'guard…'; render(); }
+        await Promise.race([p, sleep(Math.max(0, Number(st.guard.waitMs) || 0))]);
+        if (interactive) { ui.busy = ''; render(); }
+      }
+      const timedOut = gScan[mint] && gScan[mint].st === 'run';
+      const r = guardEval(mint, total);
+      let lvl = r.level;
+      if (timedOut && st.guard.timeout === 'block') lvl = 'block';
+      if (timedOut && st.guard.timeout === 'shrink' && lvl === 'clear') lvl = 'caution';
+      if (st.guard.act === 'block' && lvl === 'caution') lvl = 'block';
+      if (lvl === 'clear') return { go: true };
+      const small = Math.min(total, Math.max(0.001, Number(st.guard.shrinkSol) || 0.05));
+      const shrink = () => { const l2 = scaleLegs(legs, small); return { go: true, legs: l2, total: +l2.reduce((a, x) => a + x.amt, 0).toFixed(6) }; };
+      const head = `${r.head} · ${r.score}`;
+      if (!interactive) {
+        if (lvl === 'block') { gdSkip[mint] = Date.now() + 30 * 60e3; gdLogAdd({ mint, sym: name, kind: 'block', sol: total, text: `${src === 'rules' ? 'bundle rule' : 'order'} ◎ ${sol(total)} · ${r.head}` }); return { go: false, err: 'buy guard: ' + r.head }; }
+        if (st.guard.act === 'warn' || total <= small) return { go: true };
+        gdLogAdd({ mint, sym: name, kind: 'shrink', sol: total - small, text: `${src === 'rules' ? 'bundle rule' : 'order'} ◎ ${sol(total)} → ${sol(small)} · ${r.head}` });
+        return shrink();
+      }
+      const acts = lvl === 'block'
+        ? [{ label: 'Cancel buy', v: null, kind: 'pri' }, total > small ? { label: `Buy ◎ ${sol(small)} instead`, v: 'small', kind: 'warnb' } : null, { label: 'Hold 2 s to buy anyway', v: 'go', kind: 'danger', hold: true }]
+        : st.guard.act === 'warn' ? [{ label: 'Cancel', v: null, kind: 'ghost' }, { label: `Buy ◎ ${sol(total)}`, v: 'go', kind: 'pri' }]
+          : [{ label: 'Cancel', v: null, kind: 'ghost' }, total > small ? { label: `Buy ◎ ${sol(small)}`, v: 'small', kind: 'pri' } : null, { label: `Buy ◎ ${sol(total)} anyway`, v: 'go', kind: 'danger' }];
+      const v = await ask({ tone: lvl === 'block' ? 'warn' : 'live', title: head, guard: { r, lvl, mint, name, total, timedOut }, actions: acts.filter(Boolean) });
+      if (!v) { if (lvl === 'block') gdSkip[mint] = Date.now() + 30 * 60e3; gdLogAdd({ mint, sym: name, kind: 'block', sol: total, text: `manual ◎ ${sol(total)} cancelled · ${r.head}` }); return { go: false, err: 'cancelled by the buy guard' }; }
+      if (v === 'small') { gdLogAdd({ mint, sym: name, kind: 'shrink', sol: total - small, text: `manual ◎ ${sol(total)} → ${sol(small)} · ${r.head}` }); return Object.assign(shrink(), { asked: true }); }
+      gdLogAdd({ mint, sym: name, kind: 'warn', sol: 0, text: `you bought anyway · ◎ ${sol(total)} · ${r.head}` });
+      return { go: true, asked: true };
+    }
+    // prefetch: the coin on screen, and the Trenches cards in view (one at a time)
+    const gdQ = [];
+    let gdBusyQ = false;
+    function gdWant(mint) { if (!GD || !st.guard.on || !st.guard.cardScan || gScan[mint] || gdQ.includes(mint)) return; gdQ.push(mint); if (gdQ.length > 40) gdQ.shift(); gdPump(); }
+    async function gdPump() {
+      if (gdBusyQ) return;
+      gdBusyQ = true;
+      try { while (gdQ.length) { const m = gdQ.pop(); if (gScan[m] || document.hidden) continue; await guardScan(m, false, true); await sleep(1200); } } finally { gdBusyQ = false; }
+    }
+    // ---- views
+    const GD_TAG = { block: ['BLOCKED', 'bad'], caution: ['CAUTION', 'mid'], clear: ['CLEAR', 'ok'] };
+    function gdLanes(S) {
+      const max = Math.max(10, S.lastRel || 0), X = (r) => ((r / max) * 100).toFixed(1) + '%';
+      const L = [['dev', 'Dev', shortA(S.dev), '#F59AA6'], ['farm', 'Farm', S.farm ? S.farm.n + ' wallets' : 'none', '#D2C5FF'], ['sniper', 'Slot 0', S.snipers.length + ' sniper' + (S.snipers.length === 1 ? '' : 's'), '#FFE08A'], ['out', 'Outside', 'other buyers', '#8B919C']];
+      const dot = (e, col) => { const px = Math.max(6, Math.min(20, Math.sqrt(e.tok / 1e6) * 2.2)).toFixed(0); return `<i style="left:${X(e.rel)};top:${e.side === 'sell' ? 30 : 12}px;width:${px}px;height:${px}px;${e.side === 'sell' ? `border:1.5px solid ${col}` : `background:${col}`}"></i>`; };
+      const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * max));
+      return `<div class="gln"><div class="gtk n">${ticks.map((t) => `<span style="left:${X(t)}">${t ? '+' + t : 'create'}</span>`).join('')}</div>
+        ${L.map(([k, n, sub, col]) => `<div class="glr"><span class="gll"><b style="color:${col}">${n}</b><small class="mut">${escH(sub)}</small></span><span class="gld">${S.events.filter((e) => e.lane === k).slice(0, 80).map((e) => dot(e, col)).join('')}</span></div>`).join('')}
+        <div class="mut sm">slots after create (~0.4 s each) · dot = tokens · filled = buy, ring = sell</div></div>
+        <span class="lb">TRANSACTION SHAPES · SAME SHAPE = SAME TOOL</span>
+        <div class="gpr">${S.prints.slice(0, 4).map((p) => `<div class="${S.farm && p.print === S.farm.print ? 'f' : ''}"><span class="n">${escH(p.text)}</span><span class="mut sm">${p.n} wallet${p.n === 1 ? '' : 's'}${p.dev ? ` · dev ${p.dev}×` : ''}</span><b class="n">${p.buys + p.sells}</b></div>`).join('')}</div>
+        ${S.devSells.length ? `<span class="lb">DEV HOLDING · ${S.devBuyPct.toFixed(1)}% → ${S.devLeftPct.toFixed(1)}%</span><div class="gdv">${(() => { let left = S.devBuyPct; const pts = [[0, left]].concat(S.devSells.map((x) => { left = Math.max(0, left - (x.tok / S.supply) * 100); return [x.rel, left]; })); return pts.slice(0, 12).map(([r, p]) => `<span><small class="n">${p.toFixed(p >= 10 ? 0 : 1)}%</small><i style="height:${Math.max(2, (p / Math.max(0.1, S.devBuyPct)) * 30).toFixed(0)}px"></i><small class="n mut">${r ? '+' + r : '0'}</small></span>`).join(''); })()}</div>` : ''}`;
+    }
+    function guardSheetHtml(r, o) {
+      o = o || {};
+      const [tag, cls] = GD_TAG[r.level] || GD_TAG.clear, nk = r.nuke, S = r.scan;
+      const nb = nk ? `<div class="gnk"><div class="pl n"><span>NUKE RISK · OUTSIDE BUYS SINCE LAUNCH</span><span class="${nk.line ? 'y' : ''}">◎ ${nk.outside.toFixed(2)} + your ${sol(nk.buy)}</span></div>
+          <div class="gbar"><i class="o" style="width:${Math.min(100, (nk.outside / nk.max) * 100).toFixed(1)}%"></i><i class="b" style="left:${Math.min(100, (nk.outside / nk.max) * 100).toFixed(1)}%;width:${Math.min(100, (nk.buy / nk.max) * 100).toFixed(1)}%"></i>${nk.lines.map((l) => `<em class="${l === nk.line ? 'hit' : ''}" style="left:${Math.min(100, (l / nk.max) * 100).toFixed(1)}%" title="${l} ◎"></em>`).join('')}</div>
+          <div class="pl n mut"><span>0</span><span>${nk.lines.join(' · ')} ◎ lines</span></div>${nk.line ? `<span class="sm">Your buy takes outside buying past ${nk.line} ◎. A Sniper Guard set there would sell into you.</span>` : ''}</div>` : '';
+      return `<div class="ghero ${cls}"><div class="bring n">${r.score}</div><div class="ih"><span><span class="gtg ${cls}">${tag}</span> <b>${escH(r.head)}</b></span>${r.sub ? `<span class="sm">${escH(r.sub)}</span>` : ''}${o.timedOut ? '<span class="mut sm">The launch is still being read: this is what we have so far.</span>' : ''}</div></div>
+        <div class="gck">${r.checks.map((c) => `<div class="gcr"><span class="gtg ${c.tag === 'FAIL' ? 'bad' : c.tag === 'WARN' ? 'mid' : ''}">${c.tag}</span><span class="gcb"><b>${escH(c.name)}</b><small class="mut">${escH(c.detail)}</small></span><span class="n ${c.tag === 'FAIL' ? 'dn' : c.tag === 'WARN' ? 'y' : 'mut'}">${c.pts ? '+' + c.pts : '0'}</span></div>`).join('') || '<span class="mut sm">No check fired.</span>'}</div>
+        ${nb}${S && o.why ? gdLanes(S) : ''}${S && !o.noWhy ? `<button class="lk gwy" data-a="gwhy">${o.why ? 'Hide the launch' : 'Why? See the launch ›'}</button>` : ''}`;
+    }
+    function guardViewHtml(mint) {
+      const g = gScan[mint], amt = Number(st.qb) || 0.1, r = mint ? guardEval(mint, amt) : null, M = gdMem(), log = gdLog().slice(-8).reverse();
+      const today = gdLog().filter((x) => new Date(x.at).toDateString() === new Date().toDateString()).reduce((a, x) => a + (x.kind === 'block' || x.kind === 'shrink' ? x.sol || 0 : 0), 0);
+      const S = r && r.scan, devs = Object.entries(M.devs || {}).filter(([, d]) => d.flag);
+      return `<div class="sh"><button class="lk" data-a="gview">‹ Bundles</button><b>Buy Guard</b><span class="sp"></span><span class="mut sm">${!st.guard.on ? 'off' : g ? (g.st === 'run' ? 'reading the launch…' : g.st === 'ok' ? `${S.n} txs read` : escH(g.why || g.st)) : 'not read yet'}</span><button class="ib" data-a="grescan" title="Read the launch again">${ICON.refresh}</button></div>
+        ${!mint ? '<div class="mut sm">Open a coin to check it.</div>' : guardSheetHtml(r, { why: ui.gwhy })}
+        <span class="mut sm">Scored for a ◎ ${sol(amt)} buy (your card ⚡ amount). Each real buy is scored at its own size.</span>
+        ${S ? `<div class="g2">${S.farm ? `<button class="btn" data-gmem="farm">Remember this farm</button>` : '<span></span>'}<button class="btn" data-gmem="dev">${(M.devs[S.dev] || {}).flag ? 'Unflag this dev' : 'Flag this dev everywhere'}</button></div>` : ''}
+        <div class="sh"><b class="sm2">Guard log</b><span class="sp"></span><span class="mut sm">${today > 0 ? `kept ◎ ${sol(today)} out today` : 'today'}</span></div>
+        ${log.map((x) => `<div class="bev"><span class="n mut">${agoS(Date.now() - x.at)}</span><span class="mvp ${x.kind === 'block' ? 'dump' : x.kind === 'shrink' ? 'watch' : 'exit'}">${{ block: 'BLOCKED', shrink: 'SHRUNK', warn: 'BOUGHT' }[x.kind] || 'GUARD'}</span><button class="lk2" data-open="${x.mint}">${escH(x.sym || shortA(x.mint))}</button><span>${escH(x.text)}</span></div>`).join('') || '<span class="mut sm">Nothing stopped yet.</span>'}
+        <div class="sh"><b class="sm2">Remembered</b><span class="sp"></span><span class="mut sm">shared across tabs</span></div>
+        ${M.farms.map((f, i) => `<div class="bw"><span class="mvp watch">FARM</span><span class="n">${f.wallets.length} wallets</span><span class="mut sm">${escH((f.coins || []).join(', '))}</span><span class="sp"></span><button class="xx" data-gforget="farm:${i}" aria-label="Forget this farm">×</button></div>`).join('')}
+        ${devs.map(([a, d]) => `<div class="bw"><span class="mvp dump">DEV</span><span class="n">${shortA(a)}</span><span class="mut sm">${escH((d.coins || []).join(', '))}</span><span class="sp"></span><button class="xx" data-gforget="dev:${a}" aria-label="Unflag this dev">×</button></div>`).join('')}
+        ${!M.farms.length && !devs.length ? '<span class="mut sm">Nothing saved. Save a farm or flag a dev from a coin.</span>' : ''}`;
+    }
+    function gdChip(mint) { // Trenches cards
+      if (!GD || !st.guard.on) return '';
+      const r = gdCard(mint);
+      if (!r) return '';
+      if (r.level === 'run') return '<span class="gdc run" title="Buy Guard: reading the launch">GUARD …</span>';
+      if (r.level === 'clear' && !r.scan) return '';
+      return `<span class="gdc ${r.level}" title="Buy Guard: ${escH(r.head)} · ${r.score}">${r.level === 'block' ? 'GUARD · BLOCK' : r.level === 'caution' ? 'GUARD · CAUTION' : 'GUARD · CLEAR'}</span>`;
+    }
+    const gdBlocked = (mint) => { const r = GD && st.guard.on && gdCard(mint); return !!(r && r.level === 'block'); };
+    function gdMemAct(kind) {
+      const mint = getMint(), r = mint && guardEval(mint, 0.1), S = r && r.scan;
+      if (!S) return toast('Read the launch first', true);
+      const M = gdMem(), name = sym || shortA(mint);
+      if (kind === 'farm' && S.farm) {
+        const f = M.farms.find((x) => x.wallets.filter((w) => S.farm.wallets.includes(w)).length >= 3);
+        if (f) { f.wallets = [...new Set(f.wallets.concat(S.farm.wallets))].slice(-300); if (!f.coins.includes(name)) f.coins.push(name); }
+        else M.farms.push({ id: id(), print: S.farm.print, wallets: S.farm.wallets.slice(0, 300), coins: [name], at: Date.now() });
+        M.farms = M.farms.slice(-20); toast(`Farm saved (${S.farm.n} wallets): flagged wherever 3+ of them show up`);
+      }
+      if (kind === 'dev') {
+        const d = M.devs[S.dev] || (M.devs[S.dev] = { coins: [] });
+        d.flag = !d.flag; d.at = Date.now(); if (!d.coins.includes(name)) d.coins.push(name);
+        toast(d.flag ? `Dev ${shortA(S.dev)} flagged on every coin` : 'Dev unflagged');
+      }
+      GM_setValue('gdMem', M); for (const k of Object.keys(gdCache)) delete gdCache[k]; scanCards(); render();
     }
 
     let el;
@@ -3625,6 +4075,22 @@
         <div class="conn"><span class="lb">CONNECTION</span>${conn.map(([k, v, c]) => `<div class="cr"><i class="dot ${c}"></i><span>${k}</span><span class="sp"></span><span class="n mut">${escH(v)}</span></div>`).join('')}</div></div>`;
     }
 
+    function guardSetHtml(f, ck) {
+      const G = st.guard, seg = (attr, cur, list) => `<span class="seg">${list.map(([k, l]) => `<button class="${cur === k ? 'on' : ''}" data-${attr}="${k}">${l}</button>`).join('')}</span>`;
+      const NM = { farm: 'Farm stream', devstep: 'Dev sells into buyers', busy: 'Reused farm wallets', seen: 'Farm you saved', flagged: 'Dev you flagged', nuke: 'Nuke risk (first 10 min)', out: 'Bundles already out', funder: 'Shared funder', devrec: 'Dev record (< 10% migrated)' };
+      return `<span class="sm2">Buy Guard <span class="mut sm">(Trojan · checks a coin before a buy)</span></span>
+        <div class="eg two">${ck('guard.on', 'Buy Guard on', G.on)}${ck('guard.paper', 'Guard PAPER buys too', G.paper)}
+          ${ck('guard.manual', 'Buttons, hotkeys, cards ⚡', G.manual)}${ck('guard.rules', 'Dip / DCA orders, bundle rules', G.rules)}</div>
+        <div class="sh">${seg('gact', G.act, [['warn', 'Warn only'], ['shrink', 'Shrink + block'], ['block', 'Block all ≥ caution']])}</div>
+        <div class="eg two">${f('guard.caution', 'Caution from score', G.caution, 1)}${f('guard.block', 'Block from score', G.block, 1)}
+          ${f('guard.shrinkSol', 'Shrink a caution buy to (◎)', G.shrinkSol, 0.01)}${f('guard.waitMs', 'Wait for the check (ms)', G.waitMs, 100)}
+          <label>Nuke lines (◎)<input type="text" data-s="guard.lines" value="${escH(G.lines)}"></label><label>RPC (reads the launch)<input type="text" data-s="guard.rpc" value="${escH(G.rpc)}" spellcheck="false"></label></div>
+        <div class="sh"><span class="mut sm">If the check is not done in time:</span>${seg('gto', G.timeout, [['have', 'Use what we have'], ['shrink', 'Shrink'], ['block', 'Block']])}</div>
+        <div class="gws">${Object.keys(NM).map((k) => `<label class="ck"><input type="checkbox" data-s="guard.ck.${k}" ${G.ck[k] !== false ? 'checked' : ''}>${NM[k]}</label><input class="n" type="number" step="1" data-s="guard.w.${k}" value="${G.w[k]}" aria-label="${NM[k]} weight">`).join('')}</div>
+        <div class="eg two">${ck('guard.cardScan', 'Check the Trenches cards in view', G.cardScan)}<span></span></div>
+        <div class="sh"><span class="mut sm">Blocked cards:</span>${seg('gcard', G.cardAct, [['chip', 'Chip only'], ['dim', 'Dim'], ['hide', 'Hide']])}</div>
+        <div class="mut sm">The public RPC is slow and rate-limited: a key-based RPC (Helius, QuickNode…) reads a launch in about a second. Score ≥ caution shrinks or asks, ≥ block cancels (hold 2 s to override).</div>`;
+    }
     function settingsHtml() {
       const f = (k, label, v, step) => `<label>${label}<input class="n" type="number" step="${step || 'any'}" data-s="${k}" value="${v}"></label>`;
       const ck = (k, label, on) => `<label class="ck"><input type="checkbox" data-s="${k}" ${on ? 'checked' : ''}>${label}</label>`;
@@ -3656,6 +4122,7 @@
         <div class="mut sm">Smart hide is reversible: a coin is back the moment AG matches it. Your current coin is never hidden, and while the list is stale (backtester closed or Live Terminal off screen) only badges show.</div>
         ${site && site.nativeHide ? `<div class="eg two">${ck('flt.native', `Also use ${SN}'s own Hide token`, st.filter.native)}${f('flt.after', 'after a coin is unmatched for (min)', st.filter.after, 1)}</div>
         <div class="mut sm">${SN}'s own hide stays hidden in your ${SN} account: if AG matches the coin later it won't come back by itself. ${nativeDone.size} hidden that way so far.</div>` : ''}`}
+        ${TB ? guardSetHtml(f, ck) : ''}
         <span class="sm2">Layout</span>
         <div class="sh"><span class="seg">${[[380, 'Tall'], [720, 'Wide · 2 columns']].map(([w, l]) => `<button class="${(wideOn() ? 720 : 380) === w ? 'on' : ''}" data-lw="${w}">${l}</button>`).join('')}</span><span class="mut sm">or drag the right edge</span></div>
         <span class="sm2">Holdings bar</span>
@@ -3702,6 +4169,11 @@
       if (d.bq) { return armRule(d.bq === 'dump' ? { who: 'any', when: 'sell', pct: 30, windowSec: 60, scope: 'held', then: 'sell', sellPct: 100, cooldownMin: 5, once: true } : { who: 'any', when: 'sell', pct: 20, windowSec: 60, scope: 'held', then: 'alert', cooldownMin: 5, once: false }); }
       if (d.btog) { const r = st.bund.rules.find((x) => x.id === d.btog); if (r) { r.on = !r.on; save(); } return render(); }
       if (d.bdel) { st.bund.rules = st.bund.rules.filter((x) => x.id !== d.bdel); save(); return render(); }
+      if (d.gmem) return gdMemAct(d.gmem);
+      if (d.gforget) { const M = gdMem(), [k, v] = d.gforget.split(':'); if (k === 'farm') M.farms.splice(Number(v), 1); else if (M.devs[v]) M.devs[v].flag = false; GM_setValue('gdMem', M); for (const x of Object.keys(gdCache)) delete gdCache[x]; scanCards(); return render(); }
+      if (d.gact) { st.guard.act = d.gact; save(); return render(); }
+      if (d.gcard) { st.guard.cardAct = d.gcard; save(); scanCards(); return render(); }
+      if (d.gto) { st.guard.timeout = d.gto; save(); return render(); }
       if (d.g) return useGroup(d.g);
       if (d.gd) return delGroup(d.gd);
       if (d.cpm) return copy(d.cpm, 'mint');
@@ -3756,6 +4228,9 @@
         case 'panelx': ui.panel = null; return render();
         case 'bund': st.bund.open = !st.bund.open; save(); return render();
         case 'bview': st.bund.view = st.bund.view === 'rules' ? 'list' : 'rules'; ui.bundSel = null; save(); return render();
+        case 'gview': st.bund.view = st.bund.view === 'guard' ? 'list' : 'guard'; st.bund.open = true; ui.bundSel = null; save(); return render();
+        case 'gwhy': if (ui.modal && ui.modal.guard) ui.modal.why = !ui.modal.why; else ui.gwhy = !ui.gwhy; return render();
+        case 'grescan': { const m = getMint(); if (m) { guardScan(m, true); render(); } return; }
         case 'barm': { const d = Object.assign({}, ui.bdraft || RULE_DEF()); if (d.then !== 'buy') delete d.mode; ui.bdraft = null; return armRule(d); }
         case 'barreset': st.barBox = null; st.barHide = {}; save(); renderBar(); return render();
         case 'intel': st.intel.open = !st.intel.open; save(); if (st.intel.open) loadIntel(getMint()); return render();
@@ -3844,6 +4319,16 @@
       else if (d.s === 'cardIntel') { st.cardIntel = ch; save(); scanCards(); }
       else if (d.s === 'cards') { st.cards = ch; save(); scanCards(); return render(); }
       else if (d.s === 'bund.bg') st.bund.bg = ch;
+      else if (d.s.startsWith('guard.')) {
+        const k = d.s.split('.'), tgt = k.length === 3 ? st.guard[k[1]] : st.guard, key = k[k.length - 1];
+        if (e.target.type === 'checkbox') tgt[key] = ch;
+        else if (e.target.type === 'number') tgt[key] = Math.max(0, v || 0);
+        else tgt[key] = String(tv).trim();
+        if (key === 'rpc' && !/^https:\/\//.test(st.guard.rpc)) { st.guard.rpc = 'https://api.mainnet-beta.solana.com'; toast('RPC must be an https:// address', true); }
+        for (const x of Object.keys(gdCache)) delete gdCache[x];
+        if (key === 'rpc') for (const x of Object.keys(gScan)) if (gScan[x].st !== 'run') delete gScan[x];
+        scanCards();
+      }
       else if (d.s === 'flt.native') { st.filter.native = ch; save(); scanCards(); }
       else if (d.s === 'flt.after') st.filter.after = Math.max(0, v || 0);
       else if (d.s === 'confirmAbove') st.confirmAbove = v || 0;
@@ -3883,13 +4368,21 @@
       const m = ui.modal;
       if (!m) return '';
       const stats = (m.stats || []).filter(Boolean);
+      const btns = () => `<div class="ma">${m.actions.map((a, i) => a.hold ? `<button class="btn ${a.kind || ''} hold" data-hold="${i}"><span>${escH(a.label)}</span></button>` : `<button class="btn ${a.kind || ''}" data-mv="${i}">${escH(a.label)}</button>`).join('')}</div>`;
+      if (m.guard) {
+        const G = m.guard;
+        return `<div class="mdl"><div class="mbox gbox ${G.lvl}" role="dialog" aria-modal="true" aria-label="Buy Guard: ${escH(G.r.head)}">
+          <div class="mh"><span class="mic">${ICON.shield}</span><div class="mt"><b>Buy Guard · ${escH(G.name)}</b><span class="mut sm">◎ ${sol(G.total)} buy${G.lvl === 'block' ? ' was not sent' : ' is waiting'}</span></div></div>
+          ${guardSheetHtml(G.r, { why: m.why, timedOut: G.timedOut })}
+          ${btns()}<div class="mk mut">${(() => { const d = m.actions.find((a) => a.kind === 'pri'); return d ? `Enter = ${escH(d.label)} · ` : ''; })()}Esc = cancel${G.lvl === 'block' ? ' · orders and bundle rules skip this coin for 30 min' : ''}</div></div></div>`;
+      }
       return `<div class="mdl"><div class="mbox ${m.tone || ''}" role="dialog" aria-modal="true" aria-label="${escH(m.title)}">
         <div class="mh"><span class="mic">${m.tone === 'warn' ? ICON.warn : ICON.bolt}</span><div class="mt"><b>${escH(m.title)}</b>${m.sub ? `<span class="mut sm">${escH(m.sub)}</span>` : ''}</div></div>
         ${stats.length ? `<div class="ms">${stats.map((s) => `<div class="${s.bad ? 'bad' : ''}"><span>${escH(s.k)}</span><b class="n">${escH(s.v)}</b></div>`).join('')}</div>` : ''}
         ${(m.lines || []).length ? `<div class="ml n">${m.lines.map((l) => `<div>${escH(l)}</div>`).join('')}</div>` : ''}
         ${(m.warn || []).map((w) => `<div class="mw">${escH(w)}</div>`).join('')}
         ${m.note ? `<div class="mut sm">${escH(m.note)}</div>` : ''}
-        <div class="ma">${m.actions.map((a, i) => `<button class="btn ${a.kind || ''}" data-mv="${i}">${escH(a.label)}</button>`).join('')}</div>
+        ${btns()}
         <div class="mk mut">${(() => { const d = m.actions.find((a) => a.kind === 'pri' || a.kind === 'ok'); return d ? `Enter = ${escH(d.label)} · ` : ''; })()}Esc = cancel</div></div></div>`;
     }
 
@@ -4104,6 +4597,19 @@
       el.style.top = (pos0.y ?? Math.max(8, window.innerHeight - 790)) + 'px';
       document.body.appendChild(el);
       el.addEventListener('click', onClick);
+      { // hold-to-confirm buttons (Buy Guard: buy a blocked coin anyway)
+        let hT = null, hB = null;
+        const stopH = () => { clearTimeout(hT); hT = null; if (hB) hB.classList.remove('holding'); hB = null; };
+        el.addEventListener('pointerdown', (e) => {
+          const b = e.target.closest && e.target.closest('[data-hold]');
+          if (!b || !ui.modal) return;
+          e.preventDefault(); stopH(); hB = b; b.classList.add('holding');
+          const i = Number(b.dataset.hold);
+          hT = setTimeout(() => { const a = ui.modal && ui.modal.actions[i]; stopH(); if (a) closeModal(a.v); }, 2000);
+        });
+        ['pointerup', 'pointerleave', 'pointercancel'].forEach((t) => el.addEventListener(t, (e) => { if (hB && (t !== 'pointerleave' || e.target === el)) stopH(); }, true));
+        el.addEventListener('pointerout', (e) => { if (hB && e.target.closest && e.target.closest('[data-hold]') === hB && !hB.contains(e.relatedTarget)) stopH(); });
+      }
       el.addEventListener('change', onChange);
       el.addEventListener('input', (e) => {
         const d = e.target.dataset;
@@ -4182,7 +4688,7 @@
       if (TB) { setInterval(() => { tbTick().catch(() => {}); }, 3000); GM_addValueChangeListener('tbFeed', (_k, _o, _v, remote) => { if (remote) { render(); scanCardsSoon(); } }); }
       try { startHealth(); } catch (e) { console.warn('[AG widget] health', e); }
       // test hook (only when localStorage.agtwTest = '1'): lets the test-suite drive timers directly
-      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { bsnap, tbIngest, tbTpl, agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
+      try { if (localStorage.getItem('agtwTest') === '1') unsafeWindow.__agtw = { bsnap, tbIngest, tbTpl, execBuy, gScan, guardScan, guardEval, gdMem, gdLog, gdSkip, agPack: () => agPack, nativeDone, pendingGone, pendingBuy, wallets: () => wallets, watch, pollDev, loadHeld, loadDaily, loadSrv, loadPos, st, ui, ticks, heldAll: () => heldAll, render0, scanCards, hidChk, H, hs, healthTick, relayInfo, authBlock, HL }; } catch (_) {}
       setInterval(() => { if (!document.hidden && posRef && !isLive(getMint())) render(); }, 1000); // "synced Xs ago"
       setInterval(() => { const m = getMint(); if (m && srv.mint !== m && st.adv) loadSrv(); }, 900);
       setInterval(() => { const m = getMint(); if (m && st.intel.on && !document.hidden && !ui.collapsed) loadIntel(m); }, 1000); // loadIntel itself throttles to 15s
